@@ -11,6 +11,7 @@
 | Agent（PPO） | 每一步輸出 7 個關節的**力矩上限**（正規化 [-1,1] → [MIN, MAX] Nm） |
 | `IdealPDActuator`（顯式致動器） | PD 律算出需求力矩後，被 Agent 給的上限**截斷**——上限太小手臂就撐不住、跟不上軌跡 |
 | 獎勵函數 | 任務進度（到點加分）−「電能消耗」（機械功率 + 銅損發熱）− 功率上限開太大的懲罰 |
+| 時間機制 | 每個路徑點有各自的時間預算：超時扣 `pen_timeout`；走完全程時依剩餘時間比例再加碼 `rew_speed_bonus_weight`，越快完成加越多 |
 
 電力模型：`P = Σ|τ·ω|（機械功率） + heat_coeff·Στ²（銅損：靜態持力也要耗電）`，
 每步扣 `P × dt` 焦耳對應的獎勵。因此 Agent 被逼著在「給的力不夠 → 掉點/失敗」與
@@ -120,5 +121,9 @@ project/FRANKA_POWER/
   逼 Agent 在「省電」跟「不能太慢」之間取捨。TensorBoard 上可看 `Metrics/timeout_rate`
   確認超時發生的頻率；卡在某個點一直超時，可以把那個點的時間預算調寬鬆一點，
   或代表該路徑點附近的關節功率被壓太低，需要調高 `EFFORT_LIMIT_MIN`。
+- **想讓 Agent 更積極求快、不只是「不要超時」**：`rew_speed_bonus_weight`（預設 100）
+  在走完全程那一刻，依「剩餘時間比例」給一次性加分——`bonus = weight × (1 - 已用步數/最大步數)`，
+  越快走完全程加越多，壓線完成加越少，跟 `pen_timeout` 形成對稱的獎懲。TensorBoard 上看
+  `Episode_Reward/speed_bonus`；想更強調速度就調高這個權重，想更強調省電就調低。
 - **離線環境（無法連 Nucleus 下載 Franka USD）**：參考 `FRANKA_DRAWER` 專案的做法，
   把 `FRANKA_POWER_ROBOT_CFG.spawn.usd_path` 改成本地 `franka.usd` 路徑。

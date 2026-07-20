@@ -157,6 +157,9 @@ class FrankaPowerEnvCfg(DirectRLEnvCfg):
     rew_progress_weight: float = 50.0    # 朝目標點前進的距離 (m) × 此權重
     rew_waypoint_bonus: float = 10.0     # 每到達一個路徑點
     rew_success_bonus: float = 50.0      # 走完全部路徑點
+    # 走完全程那一刻，依「剩餘時間比例」再加碼：越快走完加越多，壓線完成加越少。
+    # bonus = rew_speed_bonus_weight × (1 - 已用步數 / episode 最大步數)
+    rew_speed_bonus_weight: float = 100.0
     pen_dist_weight: float = 0.5         # 每步對「距目標距離」的持續懲罰
     pen_energy_weight: float = 0.05      # 每消耗 1 焦耳的懲罰（核心：最小電力）
     pen_effort_limit_weight: float = 0.05  # 對「開太大功率上限」本身的小額懲罰

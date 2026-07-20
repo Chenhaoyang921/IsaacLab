@@ -102,7 +102,7 @@ class FrankaPowerEnv(DirectRLEnv):
         self._ep_sums = {
             key: torch.zeros(self.num_envs, device=self.device)
             for key in [
-                "progress", "waypoint_bonus", "success_bonus", "dist_pen",
+                "progress", "waypoint_bonus", "success_bonus", "speed_bonus", "dist_pen",
                 "energy_pen", "limit_pen", "action_rate_pen", "timeout_pen", "energy_J",
             ]
         }
@@ -262,6 +262,9 @@ class FrankaPowerEnv(DirectRLEnv):
         r_progress = cfg.rew_progress_weight * self._progress
         r_waypoint = cfg.rew_waypoint_bonus * self._reached.float()
         r_success = cfg.rew_success_bonus * self._task_done.float()
+        # 走完全程那一刻，剩餘時間比例越高（走得越快）加越多分
+        time_left_frac = (1.0 - self.episode_length_buf.float() / self.max_episode_length).clamp(min=0.0)
+        r_speed = cfg.rew_speed_bonus_weight * time_left_frac * self._task_done.float()
         p_dist = -cfg.pen_dist_weight * self._dist
         p_energy = -cfg.pen_energy_weight * energy_J
         p_limit = -cfg.pen_effort_limit_weight * limit_norm
@@ -270,12 +273,16 @@ class FrankaPowerEnv(DirectRLEnv):
         p_timeout = -cfg.pen_timeout * self._wp_timeout.float()
         p_fail = -cfg.pen_fail * (self._task_failed & ~self._wp_timeout).float()
 
-        reward = r_progress + r_waypoint + r_success + p_dist + p_energy + p_limit + p_rate + p_fail + p_timeout
+        reward = (
+            r_progress + r_waypoint + r_success + r_speed
+            + p_dist + p_energy + p_limit + p_rate + p_fail + p_timeout
+        )
 
         # ---- 統計 ----
         self._ep_sums["progress"] += r_progress
         self._ep_sums["waypoint_bonus"] += r_waypoint
         self._ep_sums["success_bonus"] += r_success
+        self._ep_sums["speed_bonus"] += r_speed
         self._ep_sums["dist_pen"] += p_dist
         self._ep_sums["energy_pen"] += p_energy
         self._ep_sums["limit_pen"] += p_limit
