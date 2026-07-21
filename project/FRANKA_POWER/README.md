@@ -92,22 +92,52 @@ TensorBoard 中重點曲線：
 - `Metrics/success_rate`、`Metrics/waypoints_reached` — 任務完成度，應維持高值。
 - `Metrics/mean_power_W` — 平均瞬時功率。
 
+## 兩種等價實作：Direct 與 Manager-based
+
+同一個任務有兩個工作流版本，功能完全等價（獎勵、時間機制、功率模型都一樣），
+差別只在程式架構風格，可依需求或教學目的擇一：
+
+| 版本 | 任務 ID | 適合 |
+|---|---|---|
+| **Direct** | `Franka-Power-Opt-v0` | 所有邏輯集中在單一 env 類別，讀起來直觀，改起來快 |
+| **Manager-based** | `Franka-Power-Opt-Mgr-v0` | 觀測/獎勵/終止/動作/事件拆成宣告式 term，與官方 IsaacLab 範例（含本機 FRANKA_DRAWER）風格一致 |
+
+```powershell
+# Direct 版
+.\project\FRANKA_POWER\run_train.ps1 --task Franka-Power-Opt-v0     --num_envs 2048
+# Manager-based 版
+.\project\FRANKA_POWER\run_train.ps1 --task Franka-Power-Opt-Mgr-v0 --num_envs 2048
+```
+
+Manager-based 版共用狀態集中在 `PowerTaskEngine`（`env.power_task`）：自訂 ActionTerm
+在 pre-physics 做「力矩上限 + IK」，reward/termination 函式在 post-physics 讀取每步只算
+一次的任務狀態。獎勵權重放在 `RewardsCfg` 的各 `RewTerm.weight`（數值同 Direct 版；
+RewardManager 會再乘上一個共同的 dt，各項相對平衡不變，只有絕對尺度差一個常數）。
+
 ## 專案結構
 
 ```
 project/FRANKA_POWER/
 ├── README.md
 ├── scripts/rsl_rl/
-│   ├── train.py          # 訓練
+│   ├── train.py          # 訓練（兩版共用，用 --task 切換）
 │   ├── play.py           # 推論 + 即時印出功率設定
 │   └── cli_args.py
 └── source/FRANKA_POWER/
     ├── setup.py
-    └── FRANKA_POWER/tasks/direct/franka_power/
-        ├── __init__.py               # gym 註冊 (Franka-Power-Opt-v0)
-        ├── franka_power_env_cfg.py   # ★ 使用者填路徑點 / 重量 / 功率範圍
-        ├── franka_power_env.py       # 環境本體（IK + 動態力矩上限 + 功率獎勵）
-        └── agents/rsl_rl_ppo_cfg.py  # PPO 超參數
+    └── FRANKA_POWER/tasks/
+        ├── direct/franka_power/            # Direct 版
+        │   ├── __init__.py                 # gym 註冊 (Franka-Power-Opt-v0)
+        │   ├── franka_power_env_cfg.py     # ★ 使用者填路徑點 / 重量 / 功率範圍
+        │   ├── franka_power_env.py         # 環境本體（IK + 動態力矩上限 + 功率獎勵）
+        │   └── agents/rsl_rl_ppo_cfg.py    # PPO 超參數
+        └── manager_based/franka_power/     # Manager-based 版
+            ├── __init__.py                 # gym 註冊 (Franka-Power-Opt-Mgr-v0)
+            ├── franka_power_env_cfg.py     # ★ 使用者參數 + 各 manager 宣告
+            ├── franka_power_env.py         # 薄 subclass（只補記自訂 metric）
+            ├── power_task.py               # PowerTaskEngine（共用有狀態邏輯）
+            ├── mdp/                         # actions/observations/rewards/terminations/events
+            └── agents/rsl_rl_ppo_cfg.py    # PPO 超參數（experiment: franka_power_opt_mgr）
 ```
 
 ## 常見調整
