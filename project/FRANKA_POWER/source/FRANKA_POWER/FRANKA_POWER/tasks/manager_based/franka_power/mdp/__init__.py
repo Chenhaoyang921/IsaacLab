@@ -15,9 +15,9 @@ from .rewards import (  # noqa: F401
     energy_penalty,
     failure_penalty,
     progress,
-    speed_bonus,
     success_bonus,
     timeout_penalty,
     waypoint_bonus,
+    window_penalty,
 )
 from .terminations import task_failure, task_success  # noqa: F401

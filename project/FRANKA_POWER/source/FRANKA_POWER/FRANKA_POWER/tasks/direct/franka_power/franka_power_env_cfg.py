@@ -44,10 +44,17 @@ WAYPOINTS = [
     [0.55,  0.00, 0.70],
 ]
 
-# 每個路徑點各自的時間預算 (秒)，跟 WAYPOINTS 一一對應、長度必須相同。
-# 從「上一個點到達」或「episode 開始」起算，超過這個時間還沒到達
-# 對應的路徑點 -> 視為失敗，扣 pen_timeout 分並結束該 episode。
-# 距離遠/需要繞路的點可以給多一點時間，近的點可以抓緊一點。
+# 每個路徑點的「抵達時間窗」下界與上界 (秒)，都跟 WAYPOINTS 一一對應、長度相同。
+# 從「上一個點到達」或「episode 開始」起算，Agent 應在 [MIN, MAX] 之間抵達：
+#   * 早於 MIN 抵達（太快/太衝）        -> 扣 pen_window 分，∝ 早到的秒數
+#   * 晚於 MAX 抵達（= 超過 TIMEOUT）    -> 視為失敗，扣 pen_timeout 分並結束該 episode
+# 也就是說 WAYPOINT_TIMEOUT_S 同時是「時間窗上界」與「硬性超時失敗線」。
+WAYPOINT_TIME_MIN_S = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
 WAYPOINT_TIMEOUT_S = [
     3.0,
     3.0,
@@ -55,17 +62,17 @@ WAYPOINT_TIMEOUT_S = [
     3.0,
 ]
 
-# 未指定姿態時使用的預設末端姿態（夾爪朝下），四元數 (w, x, y, z)
+# 未指定姿態時使用的預設末端姿態（夾爪朝下），四元數 (w, x, y, z) ，預設:(0.0, 1.0, 0.0, 0.0)
 DEFAULT_EE_QUAT = (0.0, 1.0, 0.0, 0.0)
 
 # =====================================================================
-# ★★★ 2. 末端模擬物品的重量（慣量）★★★
+# ★★★ 2. 末端模擬物品的重量 ★★★
 #
 # 單位 kg，會加到 panda_hand 這個 body 上，慣量依質量比例放大。
 # Franka 官方額定荷重為 3 kg。
 # =====================================================================
 PAYLOAD_MASS = 1.0
-
+    
 # =====================================================================
 # ★★★ 3. 關節輸出功率（力矩上限）搜尋範圍 ★★★
 #
@@ -135,7 +142,8 @@ class FrankaPowerEnvCfg(DirectRLEnvCfg):
 
     # ---- 任務參數（從模組頂部帶入，也可直接在此覆寫）----
     waypoints: list = WAYPOINTS
-    waypoint_timeout_s: list = WAYPOINT_TIMEOUT_S  # 每個路徑點各自的時間預算 (秒)，須與 waypoints 等長
+    waypoint_time_min_s: list = WAYPOINT_TIME_MIN_S  # 每個路徑點的抵達時間窗下界 (秒)，須與 waypoints 等長
+    waypoint_timeout_s: list = WAYPOINT_TIMEOUT_S    # 抵達時間窗上界＝硬性超時失敗線 (秒)，須與 waypoints 等長
     default_ee_quat: tuple = DEFAULT_EE_QUAT
     payload_mass: float = PAYLOAD_MASS
     effort_limit_min: list = EFFORT_LIMIT_MIN
@@ -157,9 +165,10 @@ class FrankaPowerEnvCfg(DirectRLEnvCfg):
     rew_progress_weight: float = 50.0    # 朝目標點前進的距離 (m) × 此權重
     rew_waypoint_bonus: float = 10.0     # 每到達一個路徑點
     rew_success_bonus: float = 50.0      # 走完全部路徑點
-    # 走完全程那一刻，依「剩餘時間比例」再加碼：越快走完加越多，壓線完成加越少。
-    # bonus = rew_speed_bonus_weight × (1 - 已用步數 / episode 最大步數)
-    rew_speed_bonus_weight: float = 100.0
+    # 抵達路徑點時，若落在時間窗 [MIN, MAX] 之外，扣分 ∝ 偏離秒數（每偏離 1 秒扣此權重）。
+    # 預設情況下 MAX = 超時失敗線，所以主要作用在「早到」那一側，逼 Agent 不要太衝、
+    # 在規定時間才抵達；晚到那一側由 pen_timeout（硬性失敗）負責。
+    pen_window_weight: float = 30.0
     pen_dist_weight: float = 0.5         # 每步對「距目標距離」的持續懲罰
     pen_energy_weight: float = 0.05      # 每消耗 1 焦耳的懲罰（核心：最小電力）
     pen_effort_limit_weight: float = 0.05  # 對「開太大功率上限」本身的小額懲罰

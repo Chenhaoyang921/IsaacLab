@@ -33,10 +33,10 @@ def success_bonus(env) -> torch.Tensor:
     return env.power_task.task_done.float()
 
 
-def speed_bonus(env) -> torch.Tensor:
-    """走完全程那一刻的剩餘時間比例（越快越大，未完成為 0）。"""
+def window_penalty(env) -> torch.Tensor:
+    """抵達路徑點時偏離時間窗 [MIN, MAX] 的秒數（∝ 早到/晚到，窗內為 0）。"""
     env.power_task.update()
-    return env.power_task.speed_frac
+    return env.power_task.window_pen
 
 
 def distance_penalty(env) -> torch.Tensor:

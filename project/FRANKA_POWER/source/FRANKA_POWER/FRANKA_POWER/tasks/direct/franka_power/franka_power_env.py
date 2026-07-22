@@ -65,6 +65,16 @@ class FrankaPowerEnv(DirectRLEnv):
             [max(1, int(round(t / self.step_dt))) for t in self.cfg.waypoint_timeout_s],
             dtype=torch.long, device=self.device,
         )
+        # 抵達時間窗下界（每個路徑點；0 表示沒有下界，不罰早到）
+        if len(self.cfg.waypoint_time_min_s) != self._num_wp:
+            raise ValueError(
+                f"waypoint_time_min_s 長度 ({len(self.cfg.waypoint_time_min_s)}) 必須跟 "
+                f"waypoints 數量 ({self._num_wp}) 一致，兩者要一一對應。"
+            )
+        self._wp_min_steps = torch.tensor(
+            [max(0, int(round(t / self.step_dt))) for t in self.cfg.waypoint_time_min_s],
+            dtype=torch.long, device=self.device,
+        )
 
         # ---- 差分 IK 控制器 ----
         ik_cfg = DifferentialIKControllerCfg(
@@ -97,12 +107,13 @@ class FrankaPowerEnv(DirectRLEnv):
         # ---- 每個路徑點的時間預算（超時判定，計數器）----
         self._wp_step_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._wp_timeout = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._window_pen = torch.zeros(self.num_envs, device=self.device)  # 抵達時間偏離窗口的秒數
 
         # ---- episode 統計（訓練 log 用）----
         self._ep_sums = {
             key: torch.zeros(self.num_envs, device=self.device)
             for key in [
-                "progress", "waypoint_bonus", "success_bonus", "speed_bonus", "dist_pen",
+                "progress", "waypoint_bonus", "success_bonus", "window_pen", "dist_pen",
                 "energy_pen", "limit_pen", "action_rate_pen", "timeout_pen", "energy_J",
             ]
         }
@@ -220,6 +231,14 @@ class FrankaPowerEnv(DirectRLEnv):
 
         # 到達判定與路徑點推進
         self._reached = self._dist < self.cfg.waypoint_tolerance
+
+        # 抵達時間窗懲罰：用「推進前」的 wp_idx 與計數器，算這次抵達偏離 [MIN, MAX] 幾秒
+        min_steps = self._wp_min_steps[self._wp_idx]
+        max_steps = self._wp_timeout_steps[self._wp_idx]
+        early = (min_steps - self._wp_step_counter).clamp(min=0)
+        late = (self._wp_step_counter - max_steps).clamp(min=0)
+        self._window_pen = self._reached.float() * (early + late).float() * self.step_dt
+
         at_last = self._wp_idx >= (self._num_wp - 1)
         self._task_done = self._reached & at_last
         advance = self._reached & ~at_last
@@ -262,9 +281,8 @@ class FrankaPowerEnv(DirectRLEnv):
         r_progress = cfg.rew_progress_weight * self._progress
         r_waypoint = cfg.rew_waypoint_bonus * self._reached.float()
         r_success = cfg.rew_success_bonus * self._task_done.float()
-        # 走完全程那一刻，剩餘時間比例越高（走得越快）加越多分
-        time_left_frac = (1.0 - self.episode_length_buf.float() / self.max_episode_length).clamp(min=0.0)
-        r_speed = cfg.rew_speed_bonus_weight * time_left_frac * self._task_done.float()
+        # 抵達時間偏離窗口 [MIN, MAX] 的懲罰（∝ 偏離秒數，只在抵達路徑點那一步非零）
+        p_window = -cfg.pen_window_weight * self._window_pen
         p_dist = -cfg.pen_dist_weight * self._dist
         p_energy = -cfg.pen_energy_weight * energy_J
         p_limit = -cfg.pen_effort_limit_weight * limit_norm
@@ -274,7 +292,7 @@ class FrankaPowerEnv(DirectRLEnv):
         p_fail = -cfg.pen_fail * (self._task_failed & ~self._wp_timeout).float()
 
         reward = (
-            r_progress + r_waypoint + r_success + r_speed
+            r_progress + r_waypoint + r_success + p_window
             + p_dist + p_energy + p_limit + p_rate + p_fail + p_timeout
         )
 
@@ -282,7 +300,7 @@ class FrankaPowerEnv(DirectRLEnv):
         self._ep_sums["progress"] += r_progress
         self._ep_sums["waypoint_bonus"] += r_waypoint
         self._ep_sums["success_bonus"] += r_success
-        self._ep_sums["speed_bonus"] += r_speed
+        self._ep_sums["window_pen"] += p_window
         self._ep_sums["dist_pen"] += p_dist
         self._ep_sums["energy_pen"] += p_energy
         self._ep_sums["limit_pen"] += p_limit

@@ -67,6 +67,16 @@ class PowerTaskEngine:
             [max(1, int(round(t / self.step_dt))) for t in self.cfg.waypoint_timeout_s],
             dtype=torch.long, device=self.device,
         )
+        # 抵達時間窗下界（每個路徑點；0 表示沒有下界，不罰早到）
+        if len(self.cfg.waypoint_time_min_s) != self.num_wp:
+            raise ValueError(
+                f"waypoint_time_min_s 長度 ({len(self.cfg.waypoint_time_min_s)}) 必須跟 "
+                f"waypoints 數量 ({self.num_wp}) 一致，兩者要一一對應。"
+            )
+        self._wp_min_steps = torch.tensor(
+            [max(0, int(round(t / self.step_dt))) for t in self.cfg.waypoint_time_min_s],
+            dtype=torch.long, device=self.device,
+        )
 
         # ---- 差分 IK ----
         ik_cfg = DifferentialIKControllerCfg(
@@ -98,7 +108,7 @@ class PowerTaskEngine:
         self.energy_J = torch.zeros(self.num_envs, device=self.device)
         self.limit_norm = torch.zeros(self.num_envs, device=self.device)
         self.action_rate = torch.zeros(self.num_envs, device=self.device)
-        self.speed_frac = torch.zeros(self.num_envs, device=self.device)
+        self.window_pen = torch.zeros(self.num_envs, device=self.device)  # 抵達時間偏離窗口的秒數
 
         # ---- episode 統計（給 _reset_idx 記 log 用）----
         self._ep_limit_sums = torch.zeros(self.num_envs, 7, device=self.device)
@@ -207,6 +217,14 @@ class PowerTaskEngine:
 
         # 到達判定與路徑點推進
         self.reached = self.dist < self.cfg.waypoint_tolerance
+
+        # 抵達時間窗懲罰：用「推進前」的 wp_idx 與計數器，算這次抵達偏離 [MIN, MAX] 幾秒
+        min_steps = self._wp_min_steps[self.wp_idx]
+        max_steps = self._wp_timeout_steps[self.wp_idx]
+        early = (min_steps - self._wp_step_counter).clamp(min=0)
+        late = (self._wp_step_counter - max_steps).clamp(min=0)
+        self.window_pen = self.reached.float() * (early + late).float() * self.step_dt
+
         at_last = self.wp_idx >= (self.num_wp - 1)
         self.task_done = self.reached & at_last
         advance = self.reached & ~at_last
@@ -236,8 +254,6 @@ class PowerTaskEngine:
         self.limit_norm = ((self.effort_limits - self._effort_min) /
                            (self._effort_max - self._effort_min)).mean(dim=-1)
         self.action_rate = torch.sum((self.actions_norm - self._prev_actions) ** 2, dim=-1)
-        time_left = (1.0 - self._env.episode_length_buf.float() / self._env.max_episode_length).clamp(min=0.0)
-        self.speed_frac = time_left * self.task_done.float()
 
         # episode 統計累積
         self._ep_limit_sums += self.effort_limits

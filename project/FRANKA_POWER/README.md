@@ -151,9 +151,13 @@ project/FRANKA_POWER/
   逼 Agent 在「省電」跟「不能太慢」之間取捨。TensorBoard 上可看 `Metrics/timeout_rate`
   確認超時發生的頻率；卡在某個點一直超時，可以把那個點的時間預算調寬鬆一點，
   或代表該路徑點附近的關節功率被壓太低，需要調高 `EFFORT_LIMIT_MIN`。
-- **想讓 Agent 更積極求快、不只是「不要超時」**：`rew_speed_bonus_weight`（預設 100）
-  在走完全程那一刻，依「剩餘時間比例」給一次性加分——`bonus = weight × (1 - 已用步數/最大步數)`，
-  越快走完全程加越多，壓線完成加越少，跟 `pen_timeout` 形成對稱的獎懲。TensorBoard 上看
-  `Episode_Reward/speed_bonus`；想更強調速度就調高這個權重，想更強調省電就調低。
+- **要 Agent「在規定時間才到、不要太衝」**：每個路徑點有一個抵達時間窗
+  `[WAYPOINT_TIME_MIN_S, WAYPOINT_TIMEOUT_S]`（預設每點 [1.0s, 3.0s]）。抵達時間落在窗外
+  會扣 `pen_window_weight`（預設 30）× 偏離秒數：
+  - **早於 MIN 抵達**（太快/太衝）→ 按早到幾秒成正比扣分（這取代了舊的「越快越加分」）。
+  - **晚於 MAX 抵達**（= 超過 `WAYPOINT_TIMEOUT_S`）→ 由 `pen_timeout` 硬性失敗處理。
+  想讓某個點「不要太早到」就調高該點的 `WAYPOINT_TIME_MIN_S`；想整體更嚴格就調高
+  `pen_window_weight`。TensorBoard 上看 `Episode_Reward/window_pen`（Direct 版）。
+  註：`MIN=0` 表示該點不罰早到。
 - **離線環境（無法連 Nucleus 下載 Franka USD）**：參考 `FRANKA_DRAWER` 專案的做法，
   把 `FRANKA_POWER_ROBOT_CFG.spawn.usd_path` 改成本地 `franka.usd` 路徑。

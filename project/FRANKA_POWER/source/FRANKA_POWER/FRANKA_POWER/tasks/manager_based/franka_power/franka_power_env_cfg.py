@@ -43,7 +43,8 @@ WAYPOINTS = [
     [0.45, -0.30, 0.55],
     [0.55,  0.00, 0.70],
 ]
-WAYPOINT_TIMEOUT_S = [3.0, 3.0, 3.0, 3.0]      # 與 WAYPOINTS 一一對應，長度須相同
+WAYPOINT_TIME_MIN_S = [1.0, 1.0, 1.0, 1.0]     # 每點抵達時間窗下界（早於此值抵達 -> 扣 window 分）
+WAYPOINT_TIMEOUT_S = [3.0, 3.0, 3.0, 3.0]      # 每點抵達時間窗上界＝硬性超時失敗線
 DEFAULT_EE_QUAT = (0.0, 1.0, 0.0, 0.0)          # 未指定姿態時的預設末端姿態 (w,x,y,z)
 PAYLOAD_MASS = 1.0                              # 末端模擬物品重量 (kg)
 EFFORT_LIMIT_MIN = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -97,7 +98,7 @@ class RewardsCfg:
     progress = RewTerm(func=mdp.progress, weight=50.0)
     waypoint_bonus = RewTerm(func=mdp.waypoint_bonus, weight=10.0)
     success_bonus = RewTerm(func=mdp.success_bonus, weight=50.0)
-    speed_bonus = RewTerm(func=mdp.speed_bonus, weight=100.0)
+    window_pen = RewTerm(func=mdp.window_penalty, weight=-30.0)
     dist_pen = RewTerm(func=mdp.distance_penalty, weight=-0.5)
     energy_pen = RewTerm(func=mdp.energy_penalty, weight=-0.05)
     limit_pen = RewTerm(func=mdp.effort_limit_penalty, weight=-0.05)
@@ -132,6 +133,7 @@ class EventCfg:
 class FrankaPowerEnvCfg(ManagerBasedRLEnvCfg):
     # ---- 使用者任務參數（由 PowerTaskEngine 透過 env.cfg 讀取）----
     waypoints: list = WAYPOINTS
+    waypoint_time_min_s: list = WAYPOINT_TIME_MIN_S
     waypoint_timeout_s: list = WAYPOINT_TIMEOUT_S
     default_ee_quat: tuple = DEFAULT_EE_QUAT
     payload_mass: float = PAYLOAD_MASS
