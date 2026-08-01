@@ -441,7 +441,7 @@ def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     完成條件 (兩項皆成立)：
     1. 花朵與瓶口距離 <= 5cm
-    2. 花朵 X 軸與世界 Z 軸夾角 <= 35 度
+    2. 花朵 X 軸與世界 Z 軸夾角 <= 10 度
     """
     # 距離檢查
     flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
@@ -449,13 +449,13 @@ def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     distance = torch.norm(bottle_top - flower_pos, dim=-1, p=2)
     dist_ok = distance <= 0.05
 
-    # 角度檢查 (cos(35 deg) approx 0.819)
+    # 角度檢查 (cos(10 deg) approx 0.985)
     flower_quat = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
     flower_rot_mat = matrix_from_quat(flower_quat)
     flower_x = flower_rot_mat[..., 0]
     world_up = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand_as(flower_x)
     align_cosine = (flower_x * world_up).sum(dim=-1)
-    angle_ok = align_cosine >= 0.819
+    angle_ok = align_cosine >= 0.985
 
     return dist_ok & angle_ok
 
@@ -521,7 +521,7 @@ def s2_release(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tenso
 
 def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 2 完成條件：花朵位於 bottle_inside 下方且 x/y 對齊（< 2cm），
-    且花朵 X 軸與世界 Z 軸夾角 <= 35 度（與 _is_s1_complete 相同角度條件）。
+    且花朵 X 軸與世界 Z 軸夾角 <= 35 度。
     """
     bottle_inside = env.scene["bottle_frame"].data.target_pos_w[..., 1, :]
     flower_pos    = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
@@ -529,7 +529,7 @@ def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     near_x = torch.abs(flower_pos[:, 0] - bottle_inside[:, 0]) < 0.02
     near_y = torch.abs(flower_pos[:, 1] - bottle_inside[:, 1]) < 0.02
 
-    # 花朵 +X 朝上檢查（cos(35 deg) approx 0.819，同 _is_s1_complete）
+    # 花朵 +X 朝上檢查（cos(35 deg) approx 0.819）
     flower_quat = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
     flower_rot_mat = matrix_from_quat(flower_quat)
     flower_x = flower_rot_mat[..., 0]

@@ -143,9 +143,9 @@ class FlowerSceneCfg(InteractiveSceneCfg):
             ),
             FrameTransformerCfg.FrameCfg(
                 prim_path="{ENV_REGEX_NS}/Bottle",
-                name="bottle_inside",        # index 1：瓶內基準點（238mm × 2 = 0.476m）
+                name="bottle_inside",        # index 1：瓶內基準點（0.4m）
                 offset=OffsetCfg(
-                    pos=(0.0, 0.476, 0.0),
+                    pos=(0.0, 0.4, 0.0),
                     rot=(0.7071, 0.7071, 0.0, 0.0),
                 ),
             ),
