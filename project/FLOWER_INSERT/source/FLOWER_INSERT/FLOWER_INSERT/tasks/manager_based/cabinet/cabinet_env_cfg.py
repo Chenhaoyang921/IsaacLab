@@ -221,14 +221,11 @@ class ObservationsCfg:
         # 觀察花朵位置（相對於 EE）
         flower_pos = ObsTerm(func=mdp.flower_pos)
 
-        # 手部與花朵的距離（第一階段用）
+        # 手部與花朵的距離
         rel_ee_flower_distance = ObsTerm(func=mdp.rel_ee_flower_distance)
 
-        # 花朵到瓶口的距離（第三階段用）
+        # 花朵到瓶口的距離
         rel_flower_bottle_distance = ObsTerm(func=mdp.rel_flower_bottle_distance)
-
-        # 任務階段標籤：[0,0]=第一階段，[1,0]=第三階段
-        stage_tag = ObsTerm(func=mdp.stage_tag)
 
         actions = ObsTerm(func=mdp.last_action) # 上一步執行的動作（幫助動作連續性）
 
@@ -302,20 +299,20 @@ class RewardsCfg:
     s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=10.0)
     s0_catch               = RewTerm(func=mdp.s0_catch, weight=50.0)
     s0_touch_flower        = RewTerm(func=mdp.s0_touch_flower, weight=8.0)
-    # dead_penalty = -λ × cum_end(300+120+180=600)，λ=1
+    # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-600.0)
-    # complete_bonus = weight × 剩餘步數（越早完成剩越多）；weight = c × cum_start(300)，c=0.1
+    # complete_bonus = weight × 全域剩餘步數（S0 條件首次成立時觸發一次）
     s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=30.0)
 
-    # ── Stage 1：移動到瓶口 + 花朵 +X 朝上 ──────────────────────────────
+    # ── 移動到瓶口 + 花朵 +X 朝上 ────────────────────────────────────────
     s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=50.0)
     s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=50.0)
-    # dead_penalty = -λ × cum_end(120+180=300)，λ=1
+    # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-300.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(300+120=420)，c=0.1
+    # complete_bonus = weight × 全域剩餘步數（S1 條件首次成立時觸發一次）
     s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=42.0)
 
-    # ── Stage 2：插入瓶子 ────────────────────────────────────────────────
+    # ── 插入瓶子 ─────────────────────────────────────────────────────────
     s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=80.0)
 
     s2_release = RewTerm(
@@ -324,15 +321,15 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=MISSING)},
     )
 
-    # dead_penalty = -λ × cum_end(180)，λ=1
+    # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-180.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(300+120+180=600)，c=0.1
+    # complete_bonus = weight × 全域剩餘步數（S2 條件首次成立時觸發一次）
     s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=60.0)
 
-    # ── All stages ──────────────────────────────────────────────────────
-    # 全任務完成（Stage 2 完成當步）獨立速度獎勵：weight × (所有階段總步數600 - 目前 step)
+    # ── 全域項 ───────────────────────────────────────────────────────────
+    # 全任務完成（S2 完成當步）獨立速度獎勵：weight × 全域剩餘步數
     all_complete_bonus = RewTerm(func=mdp.all_complete_bonus, weight=10.0)
-    # 動作平滑懲罰
+    # 動作平滑懲罰（全程一致）
     all_action_rate_l2 = RewTerm(func=mdp.all_action_rate_l2, weight=-0.001)
     all_joint_vel_l2   = RewTerm(func=mdp.all_joint_vel_l2, weight=-0.001)
 
@@ -357,18 +354,9 @@ class CurriculumCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)   # 600 steps 安全網
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)   # 回合時間上限
 
-    # Stage 0 預算(300步)耗盡仍未完成 → 死亡，並給予 -500 懲罰
-    phase0_dead = DoneTerm(func=mdp.phase0_dead_termination, time_out=False)
-
-    # Stage 1 預算(120步)耗盡仍未完成 → 死亡，並給予 -300 懲罰
-    s1_dead = DoneTerm(func=mdp.s1_dead_termination, time_out=False)
-
-    # Stage 2 預算(180步)耗盡仍未完成 → 死亡，並給予 -200 懲罰
-    s2_dead = DoneTerm(func=mdp.s2_dead_termination, time_out=False)
-
-    # Stage 2 完成 → 任務成功，結束回合
+    # 插入完成 → 任務成功，結束回合
     task_success = DoneTerm(func=mdp.task_success_termination, time_out=False)
 
 

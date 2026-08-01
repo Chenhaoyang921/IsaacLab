@@ -16,131 +16,30 @@ if TYPE_CHECKING:
 
 
 ##==============================================================================================
+## 無階段版本（none-stage）：移除事件驅動狀態機，所有獎勵每步一起計算
+##==============================================================================================
 
-# 各階段步數預算（step budget）：stage 0 / 1 / 2
-_STAGE_BUDGETS = (300, 120, 180)
-
-
-def _stage_complete_condition(env: ManagerBasedRLEnv, stage_idx: int) -> torch.Tensor:
-    """回傳指定階段的完成條件（bool tensor）。"""
-    if stage_idx == 0:
-        return _first_stage_complete(env).bool()
-    elif stage_idx == 1:
-        return _is_s1_complete(env)
-    else:
-        return _is_s2_complete(env)
+# 全域步數基準（供 complete_bonus 速度計分用）
+_TOTAL_STEPS = 600
 
 
-def _update_stage_state(env: ManagerBasedRLEnv) -> None:
-    """事件驅動階段狀態機，每個 env.step 只更新一次（以 common_step_counter 為快取鍵）。
-
-    每個階段有各自的步數預算：stage0=300、stage1=120、stage2=180
-    - 預算耗盡前完成 → 結算 bonus = 剩餘步數，並立即進入下一階段（下一階段拿完整預算）
-    - 預算耗盡仍未完成 → 該階段死亡（terminate）並扣分
-    - stage 2 完成 → 任務成功（terminate）
-
-    快取輸出（供各 reward / termination 函式讀取）：
-        _stage_tag_cache        (n,4)  當前階段 One-Hot（推進前）
-        _stage_fire_cache       (n,)   完成當步的剩餘步數（bonus 值），否則 0
-        _stage_fire_stage_cache (n,)   完成的是哪一階段（-1 = 無）
-        _stage_dead_stage_cache (n,)   超時死亡的是哪一階段（-1 = 無）
-        _stage_success_cache    (n,)   stage 2 完成（任務成功）
-        _all_complete_fire_cache (n,)  全任務完成當步的「所有階段總步數 - 目前 step」，否則 0
-    """
-    step_key = int(env.common_step_counter)
-    if getattr(env, "_stage_cache_step", -1) == step_key:
-        return
-    env._stage_cache_step = step_key
-
-    n   = env.num_envs
-    dev = env.device
-
-    # 延遲初始化持久狀態
-    if not hasattr(env, "_stage_current"):
-        env._stage_current = torch.zeros(n, dtype=torch.long, device=dev)
-        env._stage_start   = torch.zeros(n, dtype=torch.long, device=dev)
-        env._stage_done    = torch.zeros(n, dtype=torch.bool, device=dev)
+def _fire_once(env: ManagerBasedRLEnv, flag_name: str, condition: torch.Tensor) -> torch.Tensor:
+    """一次性觸發：條件在該回合首次成立的那一步回傳 True，之後不再觸發。"""
+    if not hasattr(env, flag_name):
+        setattr(env, flag_name, torch.zeros(env.num_envs, dtype=torch.bool, device=env.device))
+    flag = getattr(env, flag_name)
 
     # 新回合重置（episode_length_buf 在 reward 計算前已 +1，故第一步 = 1）
-    reset_mask = env.episode_length_buf == 1
-    if reset_mask.any():
-        env._stage_current[reset_mask] = 0
-        env._stage_start[reset_mask]   = 0
-        env._stage_done[reset_mask]    = False
+    flag[env.episode_length_buf == 1] = False
 
-    step    = env.episode_length_buf
-    cur     = env._stage_current.clone()         # 快照，避免下方 in-place 推進污染後續讀取
-    budgets = torch.tensor(_STAGE_BUDGETS, device=dev, dtype=torch.long)
-    budget  = budgets[cur]                       # 每個 env 當前階段的步數預算
-    elapsed = step - env._stage_start            # 當前階段已經過步數
-
-    # 逐階段評估完成條件（只評估各 env 所在的階段）
-    complete = torch.zeros(n, dtype=torch.bool, device=dev)
-    for k in range(3):
-        mask = (cur == k) & ~env._stage_done
-        if mask.any():
-            complete = complete | (mask & _stage_complete_condition(env, k))
-
-    active        = ~env._stage_done
-    completed_now = complete & active
-    timeout_now   = (elapsed >= budget) & ~complete & active
-
-    # ── tag 用「推進前」的 cur 計算，避免邊界步重疊 ──
-    tag = torch.zeros(n, 4, device=dev)
-    tag.scatter_(1, cur.unsqueeze(1), 1.0)
-    tag[env._stage_done] = 0.0                   # 已完成任務的 env 不屬於任何階段
-    env._stage_tag_cache = tag
-
-    # ── bonus = 剩餘步數（完成當步）──
-    remaining = (budget - elapsed).clamp(min=0).float()
-    fire = torch.zeros(n, device=dev)
-    fire[completed_now] = remaining[completed_now]
-    env._stage_fire_cache = fire
-
-    # ── 全任務完成（stage 2 完成當步）：獨立計算「所有階段總步數 - 目前 step」的全域速度獎勵 ──
-    total_budget = sum(_STAGE_BUDGETS)   # 300+120+180 = 600
-    s2_completed_now = completed_now & (cur == 2)
-    all_complete_fire = torch.zeros(n, device=dev)
-    if s2_completed_now.any():
-        total_remaining = (total_budget - step).clamp(min=0).float()
-        all_complete_fire[s2_completed_now] = total_remaining[s2_completed_now]
-    env._all_complete_fire_cache = all_complete_fire
-
-    fire_stage = torch.full((n,), -1, dtype=torch.long, device=dev)
-    fire_stage[completed_now] = cur[completed_now]
-    env._stage_fire_stage_cache = fire_stage
-
-    # ── 超時死亡 ──
-    dead_stage = torch.full((n,), -1, dtype=torch.long, device=dev)
-    dead_stage[timeout_now] = cur[timeout_now]
-    env._stage_dead_stage_cache = dead_stage
-
-    # ── 任務成功（stage 2 完成）──
-    env._stage_success_cache = completed_now & (cur == 2)
-
-    # ── 瓶子瞬移：stage 0 完成當步 ──
-    spawn_ids = torch.where(completed_now & (cur == 0))[0]
-    if len(spawn_ids) > 0:
-        bottle = env.scene["bottle"]
-        flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-        root_state = bottle.data.root_state_w[spawn_ids].clone()
-        root_state[:, 0] = flower_pos[spawn_ids, 0]
-        root_state[:, 1] = flower_pos[spawn_ids, 1]
-        root_state[:, 2] = 0.0
-        root_state[:, 7:] = 0.0
-        bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
-
-    # ── 推進階段：完成且非最後一階段 → 進下一階段，start 設為當前步 ──
-    adv = completed_now & (cur < 2)
-    env._stage_current[adv] = cur[adv] + 1
-    env._stage_start[adv]   = step[adv]
-    env._stage_done[completed_now & (cur == 2)] = True
+    fire = condition & ~flag
+    flag[fire] = True
+    return fire
 
 
-def _compute_stage_tag(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """回傳當前階段 One-Hot 標籤 (num_envs, 4)，由事件驅動狀態機決定。"""
-    _update_stage_state(env)
-    return env._stage_tag_cache
+def _remaining_steps(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """全域剩餘步數（越早完成剩越多），作為 complete_bonus 的速度計分基準。"""
+    return (_TOTAL_STEPS - env.episode_length_buf).clamp(min=0).float()
 
 
 ##==============================================================================================
@@ -188,8 +87,7 @@ def s0_approach_flower(env: ManagerBasedRLEnv, threshold: float) -> torch.Tensor
     # 如果距離進入門檻範圍內，給予 2 倍獎勵
     reward = torch.where(distance <= threshold, 2 * reward, reward)
 
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
+    return reward
 
 
 def s0_align_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -231,9 +129,7 @@ def s0_align_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     reward = align_x ** 4
 
-    # 兩個條件各佔 0.5，合計最高 1 分
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
+    return reward
 
 
 def s0_grasp_flower(
@@ -287,8 +183,7 @@ def s0_grasp_flower(
     # 同時滿足：距離夠近 AND 方向正確，才獎勵閉合
     reward = is_close * is_aligned * reward
 
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
+    return reward
 
 
 def s0_lift_when_grasped(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -325,8 +220,7 @@ def s0_lift_when_grasped(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> t
     reward = torch.clamp(ee_height * 10.0, min=0.0, max=0.2)
     apply_reward = is_closed * is_flower_grasped * reward
 
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * apply_reward
+    return apply_reward
 
 
 
@@ -363,77 +257,72 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     reward = open_easy + open_easy_catch + open_medium_catch + open_hard_catch
 
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
+    return reward
 
 
 def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 0 完成 bonus = 剩餘步數（越早完成剩越多），最終分數 = weight × 剩餘步數。
+    """S0 完成條件首次成立時給予速度獎勵（全域剩餘步數），並觸發瓶子瞬移。"""
+    fire = _fire_once(env, "_s0_bonus_fired", _first_stage_complete(env).bool())
 
-    瓶子瞬移已整合於狀態機 _update_stage_state。
-    """
-    _update_stage_state(env)
-    return torch.where(
-        env._stage_fire_stage_cache == 0,
-        env._stage_fire_cache,
-        torch.zeros_like(env._stage_fire_cache),
-    )
+    # 瓶子瞬移：S0 完成當步將瓶子移到花朵的 x, y（z = 0）
+    spawn_ids = torch.where(fire)[0]
+    if len(spawn_ids) > 0:
+        bottle = env.scene["bottle"]
+        flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
+        root_state = bottle.data.root_state_w[spawn_ids].clone()
+        root_state[:, 0] = flower_pos[spawn_ids, 0]
+        root_state[:, 1] = flower_pos[spawn_ids, 1]
+        root_state[:, 2] = 0.0
+        root_state[:, 7:] = 0.0
+        bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
+
+    return fire.float() * _remaining_steps(env)
 
 
 def s0_catch(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """tool_center 與花朵直線距離 < 0.003m 時，每 tick 給 3 分（第一階段限定）。"""
-    tag = _compute_stage_tag(env)
+    """tool_center 與花朵直線距離 < 0.003m 時，每 tick 給 3 分。"""
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(flower_pos - tool_center_pos, dim=-1, p=2)
-    return tag[:, 0] * (distance < 0.003).float() * 3.0
+    return (distance < 0.003).float() * 3.0
 
 
 def s0_touch_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """夾住花朵時每 tick 給分（第一階段限定）。"""
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * is_catch(env)
+    """夾住花朵時每 tick 給分。"""
+    return is_catch(env)
 
 
 def s1_arm_hold(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 2：手臂關節速度接近零（維持不動）→ 獎勵。"""
-    tag = _compute_stage_tag(env)
+    """手臂關節速度接近零（維持不動）→ 獎勵。"""
     robot = env.scene["robot"]
     arm_ids = robot.find_joints("panda_joint.*")[0]
     vel = robot.data.joint_vel[:, arm_ids]
-    held_still = (torch.norm(vel, dim=-1) < 0.1).float()
-    return tag[:, 1] * held_still
+    return (torch.norm(vel, dim=-1) < 0.1).float()
 
 
 def s1_gripper_hold(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Stage 2：夾爪關節速度接近零（維持不動）→ 獎勵。"""
-    tag = _compute_stage_tag(env)
+    """夾爪關節速度接近零（維持不動）→ 獎勵。"""
     gripper_vel = env.scene[asset_cfg.name].data.joint_vel[:, asset_cfg.joint_ids]
-    held_still = (torch.norm(gripper_vel, dim=-1) < 0.01).float()
-    return tag[:, 1] * held_still
+    return (torch.norm(gripper_vel, dim=-1) < 0.01).float()
 
 
 def s1_approach_bottle(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=4。"""
-    tag = _compute_stage_tag(env)
+    """引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=4。"""
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     bottle_top      = env.scene["bottle_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(bottle_top - tool_center_pos, dim=-1, p=2)
-    reward = torch.pow(1.0 / (1.0 + distance**2), 4)
-    return tag[:, 1] * reward
+    return torch.pow(1.0 / (1.0 + distance**2), 4)
 
 
 def s1_align_flower_up(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1：花朵 +X 軸對齊世界 +Z（朝上），n=4 曲率。"""
-    tag = _compute_stage_tag(env)
+    """花朵 +X 軸對齊世界 +Z（朝上），n=4 曲率。"""
     flower_quat    = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
     flower_rot_mat = matrix_from_quat(flower_quat)
     flower_x = flower_rot_mat[..., 0]          # (num_envs, 3)
     world_up = torch.zeros_like(flower_x)
     world_up[:, 2] = 1.0                       # (0, 0, 1)
     align  = (flower_x * world_up).sum(dim=-1).clamp(min=0.0)
-    reward = torch.pow(align, 4)
-    return tag[:, 1] * reward
+    return torch.pow(align, 4)
 
 
 def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -460,63 +349,49 @@ def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     return dist_ok & angle_ok
 
 def s1_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1 完成 bonus = 剩餘步數，最終分數 = weight × 剩餘步數。"""
-    _update_stage_state(env)
-    return torch.where(
-        env._stage_fire_stage_cache == 1,
-        env._stage_fire_cache,
-        torch.zeros_like(env._stage_fire_cache),
-    )
+    """S1 完成條件首次成立時給予速度獎勵（全域剩餘步數）。"""
+    fire = _fire_once(env, "_s1_bonus_fired", _is_s1_complete(env))
+    return fire.float() * _remaining_steps(env)
 
 
 def s1_dead_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1 預算耗盡仍未完成 → 死亡。"""
-    _update_stage_state(env)
-    return env._stage_dead_stage_cache == 1
+    """無階段版本：不再有階段逾時死亡，恆為 False。"""
+    return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
 
 def s1_dead_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1 超時死亡時給予一次性懲罰（weight 為負）。"""
-    _update_stage_state(env)
-    return (env._stage_dead_stage_cache == 1).float()
+    """無階段版本：不再有階段逾時懲罰，恆為 0。"""
+    return torch.zeros(env.num_envs, device=env.device)
 
 
 def phase0_dead_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 0 預算耗盡仍未完成 → 死亡。"""
-    _update_stage_state(env)
-    return env._stage_dead_stage_cache == 0
+    """無階段版本：不再有階段逾時死亡，恆為 False。"""
+    return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
 
 def dead_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 0 超時死亡時給予一次性懲罰（weight 為負）。"""
-    _update_stage_state(env)
-    return (env._stage_dead_stage_cache == 0).float()
+    """無階段版本：不再有階段逾時懲罰，恆為 0。"""
+    return torch.zeros(env.num_envs, device=env.device)
 
 
 ##==============================================================================================
-## third stage  （僅狀態 [0, 0, 1, 0] 有效，tag[:, 2] == 1）
+## third stage
 ##==============================================================================================
 
 def s2_approach_inside(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """第三階段獎勵：花朵靠近瓶子原點，距離越近分數越高。"""
+    """花朵靠近瓶子原點，距離越近分數越高。"""
     bottle_origin = env.scene["bottle"].data.root_pos_w
     flower_pos    = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
 
     distance = torch.norm(bottle_origin - flower_pos, dim=-1, p=2)
     reward   = 1.0 / (1.0 + (distance * 5.0) ** 2)
-    reward   = torch.pow(reward, 3)
-
-    tag = _compute_stage_tag(env)
-    return tag[:, 2] * reward
+    return torch.pow(reward, 3)
 
 
 def s2_release(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """第三階段放手獎勵：獎勵張開夾爪，夾爪越開分數越高。"""
+    """放手獎勵：獎勵張開夾爪，夾爪越開分數越高。"""
     gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
-    reward = torch.sum(gripper_joint_pos, dim=-1)
-
-    tag = _compute_stage_tag(env)
-    return tag[:, 2] * reward
+    return torch.sum(gripper_joint_pos, dim=-1)
 
 
 def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -541,43 +416,34 @@ def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def s2_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 2 完成 bonus = Stage 2 剩餘步數，最終分數 = weight × 剩餘步數。"""
-    _update_stage_state(env)
-    return torch.where(
-        env._stage_fire_stage_cache == 2,
-        env._stage_fire_cache,
-        torch.zeros_like(env._stage_fire_cache),
-    )
+    """S2 完成條件首次成立時給予速度獎勵（全域剩餘步數）。"""
+    fire = _fire_once(env, "_s2_bonus_fired", _is_s2_complete(env))
+    return fire.float() * _remaining_steps(env)
 
 
 def all_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """全任務完成（Stage 2 完成當步）bonus = 所有階段總步數(600) - 目前 step，
-    最終分數 = weight × 該剩餘值，與 s2_complete_bonus 各自獨立加總。
-    """
-    _update_stage_state(env)
-    return env._all_complete_fire_cache
+    """全任務完成（S2 完成當步）之獨立速度獎勵，與 s2_complete_bonus 各自加總。"""
+    fire = _fire_once(env, "_all_bonus_fired", _is_s2_complete(env))
+    return fire.float() * _remaining_steps(env)
 
 
 def s2_dead_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 2 預算耗盡仍未完成 → 死亡。"""
-    _update_stage_state(env)
-    return env._stage_dead_stage_cache == 2
+    """無階段版本：不再有階段逾時死亡，恆為 False。"""
+    return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
 
 def s2_dead_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 2 超時死亡時給予一次性懲罰（weight 為負）。"""
-    _update_stage_state(env)
-    return (env._stage_dead_stage_cache == 2).float()
+    """無階段版本：不再有階段逾時懲罰，恆為 0。"""
+    return torch.zeros(env.num_envs, device=env.device)
 
 
 def task_success_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 2 完成 → 任務成功，結束回合。"""
-    _update_stage_state(env)
-    return env._stage_success_cache
+    """S2 完成條件成立 → 任務成功，結束回合。"""
+    return _is_s2_complete(env)
 
 
 ##==============================================================================================
-## 第一階段完成條件（內部，供 _compute_stage_tag 呼叫）
+## 第一階段完成條件（內部輔助）
 ##==============================================================================================
 
 def _first_stage_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -646,23 +512,19 @@ def is_catch(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 2 加重版懲罰（第二階段額外乘 10 倍，不限 epoch）
+# 動作平滑懲罰（無階段版本：全程一致，不再依階段加權）
 # ──────────────────────────────────────────────────────────────────────────────
 
 def all_action_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """action_rate_l2，第二階段額外乘 100 倍。"""
+    """action_rate_l2，全程一致。"""
     from isaaclab.envs.mdp.rewards import action_rate_l2
-    base      = action_rate_l2(env)
-    in_stage2 = _compute_stage_tag(env)[:, 1]
-    return base * (1.0 + 99.0 * in_stage2)   # stage2 → ×100，其餘 → ×1
+    return action_rate_l2(env)
 
 
 def all_joint_vel_l2(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """joint_vel_l2，第二階段額外乘 100 倍。"""
+    """joint_vel_l2，全程一致。"""
     from isaaclab.envs.mdp.rewards import joint_vel_l2
-    base      = joint_vel_l2(env, asset_cfg)
-    in_stage2 = _compute_stage_tag(env)[:, 1]
-    return base * (1.0 + 99.0 * in_stage2)   # stage2 → ×100，其餘 → ×1
+    return joint_vel_l2(env, asset_cfg)

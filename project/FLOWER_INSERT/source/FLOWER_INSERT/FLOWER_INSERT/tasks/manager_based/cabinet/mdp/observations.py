@@ -77,18 +77,6 @@ def ee_pos(env: ManagerBasedRLEnv) -> torch.Tensor:
     return ee_pos
 
 
-def stage_tag(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """回傳目前任務階段的 One-Hot 標籤（shape: num_envs x 4）。
-
-    index 0 = 第一階段（接近、抓取、舉起花朵） → [1, 0, 0, 0]
-    index 1 = 第二階段（等待 3 秒，瓶子就位）   → [0, 1, 0, 0]
-    index 2 = 第三階段（將花朵插入瓶子）         → [0, 0, 1, 0]
-    index 3 = 第四階段（預留）                   → [0, 0, 0, 1]
-    """
-    from .rewards import _compute_stage_tag
-    return _compute_stage_tag(env)
-
-
 def rel_flower_bottle_distance(env: ManagerBasedRLEnv) -> torch.Tensor:
     """花朵中心到瓶口（bottle_top, index 0）的相對向量 (X, Y, Z)。
 
