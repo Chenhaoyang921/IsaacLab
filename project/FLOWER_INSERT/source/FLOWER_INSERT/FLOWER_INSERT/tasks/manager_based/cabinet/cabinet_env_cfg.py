@@ -276,7 +276,7 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
     """獎勵機制定義。"""
-    # ── Stage 0：接近、對齊、抓取、舉起花朵 ────────────────────────────
+    # ── 接近、對齊、抓取、舉起花朵（權重階層：最高）────────────────────
     s0_approach_flower = RewTerm(func=mdp.s0_approach_flower, weight=0.2, params={"threshold": 0.2})
     s0_align_flower    = RewTerm(func=mdp.s0_align_flower, weight=1.0)
 
@@ -302,18 +302,18 @@ class RewardsCfg:
     # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-600.0)
     # complete_bonus = weight × 全域剩餘步數（S0 條件首次成立時觸發一次）
-    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=30.0)
+    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=60.0)
 
-    # ── 移動到瓶口 + 花朵 +X 朝上 ────────────────────────────────────────
-    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=50.0)
-    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=50.0)
+    # ── 移動到瓶口 + 花朵 +X 朝上（權重階層：中）────────────────────────
+    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=25.0)
+    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=25.0)
     # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-300.0)
     # complete_bonus = weight × 全域剩餘步數（S1 條件首次成立時觸發一次）
     s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=42.0)
 
-    # ── 插入瓶子 ─────────────────────────────────────────────────────────
-    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=80.0)
+    # ── 插入瓶子（權重階層：最低）────────────────────────────────────────
+    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=12.0)
 
     s2_release = RewTerm(
         func=mdp.s2_release,
@@ -324,7 +324,7 @@ class RewardsCfg:
     # 無階段版本：階段逾時死亡已移除，此項恆為 0（保留名稱以利對照）
     s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-180.0)
     # complete_bonus = weight × 全域剩餘步數（S2 條件首次成立時觸發一次）
-    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=60.0)
+    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=24.0)
 
     # ── 全域項 ───────────────────────────────────────────────────────────
     # 全任務完成（S2 完成當步）獨立速度獎勵：weight × 全域剩餘步數
