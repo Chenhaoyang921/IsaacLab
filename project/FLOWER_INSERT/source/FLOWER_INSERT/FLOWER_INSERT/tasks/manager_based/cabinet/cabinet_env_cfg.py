@@ -122,7 +122,7 @@ class FlowerSceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(1.5, 0.3, 0.0),   # 初始放在約 1m 外，Stage 3 開始時瞬移到花朵位置
+            pos=(0.4, 0.4, 0.0),   # 固定於場景中，不再瞬移；位於手臂可及範圍內
             rot=(0.7071, 0.7071, 0.0, 0.0),  # 繞 X 軸旋轉 90°（Y 方向 → Z 方向）
         ),
     )

@@ -261,21 +261,11 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """S0 完成條件首次成立時給予速度獎勵（全域剩餘步數），並觸發瓶子瞬移。"""
+    """S0 完成條件首次成立時給予速度獎勵（全域剩餘步數）。
+
+    瓶子固定於場景中的 init_state 位置，不隨階段完成而瞬移。
+    """
     fire = _fire_once(env, "_s0_bonus_fired", _first_stage_complete(env).bool())
-
-    # 瓶子瞬移：S0 完成當步將瓶子移到花朵的 x, y（z = 0）
-    spawn_ids = torch.where(fire)[0]
-    if len(spawn_ids) > 0:
-        bottle = env.scene["bottle"]
-        flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-        root_state = bottle.data.root_state_w[spawn_ids].clone()
-        root_state[:, 0] = flower_pos[spawn_ids, 0]
-        root_state[:, 1] = flower_pos[spawn_ids, 1]
-        root_state[:, 2] = 0.0
-        root_state[:, 7:] = 0.0
-        bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
-
     return fire.float() * _remaining_steps(env)
 
 
