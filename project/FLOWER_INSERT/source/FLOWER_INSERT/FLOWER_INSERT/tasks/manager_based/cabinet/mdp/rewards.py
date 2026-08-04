@@ -118,17 +118,7 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     # ── 任務成功（stage 2 完成）──
     env._stage_success_cache = completed_now & (cur == 2)
 
-    # ── 瓶子瞬移：stage 0 完成當步 ──
-    spawn_ids = torch.where(completed_now & (cur == 0))[0]
-    if len(spawn_ids) > 0:
-        bottle = env.scene["bottle"]
-        flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-        root_state = bottle.data.root_state_w[spawn_ids].clone()
-        root_state[:, 0] = flower_pos[spawn_ids, 0]
-        root_state[:, 1] = flower_pos[spawn_ids, 1]
-        root_state[:, 2] = 0.0
-        root_state[:, 7:] = 0.0
-        bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
+    # 瓶子固定於場景中（init_state），不再依 Stage 0 完成瞬移
 
     # ── 推進階段：完成且非最後一階段 → 進下一階段，start 設為當前步 ──
     adv = completed_now & (cur < 2)
@@ -370,7 +360,7 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
 def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 0 完成 bonus = 剩餘步數（越早完成剩越多），最終分數 = weight × 剩餘步數。
 
-    瓶子瞬移已整合於狀態機 _update_stage_state。
+    瓶子固定於場景中，不再依此觸發瞬移。
     """
     _update_stage_state(env)
     return torch.where(
