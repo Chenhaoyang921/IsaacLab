@@ -84,74 +84,16 @@ class ProgrammaticGripperActionCfg(BinaryJointPositionActionCfg):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class CooldownBinaryGripperAction(BinaryJointPositionAction):
-    """二元夾爪動作，每次開/關切換後鎖定 0.1 秒才能再次改變。"""
+    """二元夾爪動作，全程無冷卻/切換次數限制，直接透傳 RL 輸出。"""
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
-        self._cooldown_steps = int(1.0 / env.step_dt)
         self._last_command = torch.ones(env.num_envs, 1, device=env.device)
-        self._cooldown_counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-        # epoch >= 200 專用：第一階段（stage 0）與第三階段（stage 2）各有 1 次切換額度
-        self._toggle_stage0_used = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-        self._toggle_stage2_used = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     def process_actions(self, actions: torch.Tensor) -> None:
-        num_steps_per_env = 192
-        current_epoch = self._env.common_step_counter // num_steps_per_env
-
-        # 環境重置時清除所有狀態
-        reset_mask = self._env.episode_length_buf == 0
-        self._cooldown_counter[reset_mask] = 0
-        self._toggle_stage0_used[reset_mask] = False
-        self._toggle_stage2_used[reset_mask] = False
-
-        # epoch < 100：無冷卻，直接透傳
-        if current_epoch < 100:
-            self._last_command = actions.clone()
-            super().process_actions(actions)
-            return
-
-        effective = actions.clone()
-
-        # epoch >= 200：第一階段（stage 0）給 1 次切換額度，第三階段（stage 2）再給 1 次；
-        # 第二階段（stage 1）不給額度，只能維持上一個狀態
-        if current_epoch >= 200:
-            from .rewards import _compute_stage_tag, _update_stage_state
-
-            _update_stage_state(self._env)
-            cur_stage = _compute_stage_tag(self._env).argmax(dim=-1)   # 0/1/2
-
-            budget_available = torch.zeros(self._env.num_envs, dtype=torch.bool, device=self._env.device)
-            budget_available |= (cur_stage == 0) & ~self._toggle_stage0_used
-            budget_available |= (cur_stage == 2) & ~self._toggle_stage2_used
-
-            locked = ~budget_available
-            effective[locked] = self._last_command[locked]
-
-            new_sign = (effective > 0).float()
-            old_sign = (self._last_command > 0).float()
-            changed = (new_sign != old_sign).squeeze(-1) & ~locked
-
-            self._toggle_stage0_used[changed & (cur_stage == 0)] = True
-            self._toggle_stage2_used[changed & (cur_stage == 2)] = True
-
-            self._last_command = effective.clone()
-            super().process_actions(effective)
-            return
-
-        # epoch 100~199：1 秒冷卻
-        on_cooldown = self._cooldown_counter > 0
-        effective[on_cooldown] = self._last_command[on_cooldown]
-
-        new_sign = (effective > 0).float()
-        old_sign = (self._last_command > 0).float()
-        changed = (new_sign != old_sign).squeeze(-1)
-
-        self._cooldown_counter[changed] = self._cooldown_steps
-        self._cooldown_counter = (self._cooldown_counter - 1).clamp(min=0)
-
-        self._last_command = effective.clone()
-        super().process_actions(effective)
+        # 全程直接透傳，無冷卻、無切換次數限制
+        self._last_command = actions.clone()
+        super().process_actions(actions)
 
 
 @configclass

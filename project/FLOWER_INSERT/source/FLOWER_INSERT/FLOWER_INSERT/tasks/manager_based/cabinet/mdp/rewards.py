@@ -18,7 +18,16 @@ if TYPE_CHECKING:
 ##==============================================================================================
 
 # 各階段步數預算（step budget）：stage 0 / 1 / 2
-_STAGE_BUDGETS = (300, 120, 180)
+_STAGE_BUDGETS = (200, 300, 100)
+
+# 瓶子瞬移目標：固定世界座標（不隨花朵位置變動）
+_BOTTLE_FIXED_XY = (0.4, 0.4)
+
+
+def _bottle_teleport_xy(env: ManagerBasedRLEnv, spawn_ids: torch.Tensor, flower_xy: torch.Tensor) -> torch.Tensor:
+    """回傳瓶子瞬移目標 XY：固定世界座標點，不受花朵位置或隨機偏移影響。"""
+    n = len(spawn_ids)
+    return torch.tensor(_BOTTLE_FIXED_XY, device=env.device, dtype=flower_xy.dtype).expand(n, 2)
 
 
 def _stage_complete_condition(env: ManagerBasedRLEnv, stage_idx: int) -> torch.Tensor:
@@ -34,7 +43,7 @@ def _stage_complete_condition(env: ManagerBasedRLEnv, stage_idx: int) -> torch.T
 def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     """事件驅動階段狀態機，每個 env.step 只更新一次（以 common_step_counter 為快取鍵）。
 
-    每個階段有各自的步數預算：stage0=300、stage1=120、stage2=180
+    每個階段有各自的步數預算：stage0=200、stage1=300、stage2=100
     - 預算耗盡前完成 → 結算 bonus = 剩餘步數，並立即進入下一階段（下一階段拿完整預算）
     - 預算耗盡仍未完成 → 該階段死亡（terminate）並扣分
     - stage 2 完成 → 任務成功（terminate）
@@ -98,7 +107,7 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     env._stage_fire_cache = fire
 
     # ── 全任務完成（stage 2 完成當步）：獨立計算「所有階段總步數 - 目前 step」的全域速度獎勵 ──
-    total_budget = sum(_STAGE_BUDGETS)   # 300+120+180 = 600
+    total_budget = sum(_STAGE_BUDGETS)   # 200+300+100 = 600
     s2_completed_now = completed_now & (cur == 2)
     all_complete_fire = torch.zeros(n, device=dev)
     if s2_completed_now.any():
@@ -118,7 +127,18 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     # ── 任務成功（stage 2 完成）──
     env._stage_success_cache = completed_now & (cur == 2)
 
-    # 瓶子固定於場景中（init_state），不再依 Stage 0 完成瞬移
+    # ── 瓶子瞬移：stage 0 完成當步 ──
+    spawn_ids = torch.where(completed_now & (cur == 0))[0]
+    if len(spawn_ids) > 0:
+        bottle = env.scene["bottle"]
+        flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
+        target_xy = _bottle_teleport_xy(env, spawn_ids, flower_pos[spawn_ids, :2])
+        root_state = bottle.data.root_state_w[spawn_ids].clone()
+        root_state[:, 0] = target_xy[:, 0]
+        root_state[:, 1] = target_xy[:, 1]
+        root_state[:, 2] = 0.0
+        root_state[:, 7:] = 0.0
+        bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
 
     # ── 推進階段：完成且非最後一階段 → 進下一階段，start 設為當前步 ──
     adv = completed_now & (cur < 2)
@@ -360,7 +380,7 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
 def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 0 完成 bonus = 剩餘步數（越早完成剩越多），最終分數 = weight × 剩餘步數。
 
-    瓶子固定於場景中，不再依此觸發瞬移。
+    瓶子瞬移已整合於狀態機 _update_stage_state。
     """
     _update_stage_state(env)
     return torch.where(
@@ -404,12 +424,12 @@ def s1_gripper_hold(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.
 
 
 def s1_approach_bottle(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=4。"""
+    """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=2。"""
     tag = _compute_stage_tag(env)
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     bottle_top      = env.scene["bottle_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(bottle_top - tool_center_pos, dim=-1, p=2)
-    reward = torch.pow(1.0 / (1.0 + distance**2), 4)
+    reward = torch.pow(1.0 / (1.0 + distance**2), 2)
     return tag[:, 1] * reward
 
 
@@ -431,7 +451,7 @@ def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     完成條件 (兩項皆成立)：
     1. 花朵與瓶口距離 <= 5cm
-    2. 花朵 X 軸與世界 Z 軸夾角 <= 10 度
+    2. 花朵 X 軸與世界 Z 軸夾角 <= 35 度
     """
     # 距離檢查
     flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
@@ -439,13 +459,13 @@ def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     distance = torch.norm(bottle_top - flower_pos, dim=-1, p=2)
     dist_ok = distance <= 0.05
 
-    # 角度檢查 (cos(10 deg) approx 0.985)
+    # 角度檢查 (cos(35 deg) approx 0.819)
     flower_quat = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
     flower_rot_mat = matrix_from_quat(flower_quat)
     flower_x = flower_rot_mat[..., 0]
     world_up = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand_as(flower_x)
     align_cosine = (flower_x * world_up).sum(dim=-1)
-    angle_ok = align_cosine >= 0.985
+    angle_ok = align_cosine >= 0.819
 
     return dist_ok & angle_ok
 

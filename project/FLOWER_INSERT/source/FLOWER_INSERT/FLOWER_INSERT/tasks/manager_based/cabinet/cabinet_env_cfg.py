@@ -122,7 +122,7 @@ class FlowerSceneCfg(InteractiveSceneCfg):
             ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.4, 0.4, 0.0),   # 固定於場景中，不再瞬移；與 flower-insert_none-stage 一致
+            pos=(1.5, 0.3, 0.0),   # 初始放在約 1m 外，Stage 3 開始時瞬移到花朵位置
             rot=(0.7071, 0.7071, 0.0, 0.0),  # 繞 X 軸旋轉 90°（Y 方向 → Z 方向）
         ),
     )
@@ -302,21 +302,21 @@ class RewardsCfg:
     s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=10.0)
     s0_catch               = RewTerm(func=mdp.s0_catch, weight=50.0)
     s0_touch_flower        = RewTerm(func=mdp.s0_touch_flower, weight=8.0)
-    # dead_penalty = -λ × cum_end(300+120+180=600)，λ=1
+    # dead_penalty = -λ × cum_end(200+300+100=600)，λ=1
     s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-600.0)
-    # complete_bonus = weight × 剩餘步數（越早完成剩越多）；weight = c × cum_start(300)，c=0.1
-    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=30.0)
+    # complete_bonus = weight × 剩餘步數（越早完成剩越多）；weight = c × cum_start(200)，c=0.1
+    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=20.0)
 
     # ── Stage 1：移動到瓶口 + 花朵 +X 朝上 ──────────────────────────────
-    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=50.0)
-    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=50.0)
-    # dead_penalty = -λ × cum_end(120+180=300)，λ=1
-    s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-300.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(300+120=420)，c=0.1
-    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=42.0)
+    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=80.0)
+    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=20.0)
+    # dead_penalty = -λ × cum_end(300+100=400)，λ=1
+    s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-400.0)
+    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(200+300=500)，c=0.1
+    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=50.0)
 
     # ── Stage 2：插入瓶子 ────────────────────────────────────────────────
-    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=80.0)
+    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=120.0)
 
     s2_release = RewTerm(
         func=mdp.s2_release,
@@ -324,9 +324,9 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=MISSING)},
     )
 
-    # dead_penalty = -λ × cum_end(180)，λ=1
-    s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-180.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(300+120+180=600)，c=0.1
+    # dead_penalty = -λ × cum_end(100)，λ=1
+    s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-100.0)
+    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(200+300+100=600)，c=0.1
     s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=60.0)
 
     # ── All stages ──────────────────────────────────────────────────────
