@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
+import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -38,6 +39,9 @@ from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 FRAME_MARKER_SMALL_CFG = FRAME_MARKER_CFG.copy()
 FRAME_MARKER_SMALL_CFG.markers["frame"].scale = (0.10, 0.10, 0.10)
 
+# 資產目錄（相對於本檔案），避免寫死特定電腦的絕對路徑
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
 
 ##
 # Scene definition
@@ -66,7 +70,7 @@ class FlowerSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Flower",
         spawn=sim_utils.UsdFileCfg(
             # 花朵 USD 模型路徑
-            usd_path="C:/Users/User/IsaacLab/project/FLOWER_INSERT/source/FLOWER_INSERT/FLOWER_INSERT/tasks/manager_based/cabinet/assets/Flower_02.usd",
+            usd_path=os.path.join(ASSETS_DIR, "Flower_02.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
@@ -102,7 +106,7 @@ class FlowerSceneCfg(InteractiveSceneCfg):
     bottle = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Bottle",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="C:/Users/User/IsaacLab/project/FLOWER_INSERT/source/FLOWER_INSERT/FLOWER_INSERT/tasks/manager_based/cabinet/assets/BOTTLE.usd",
+            usd_path=os.path.join(ASSETS_DIR, "BOTTLE.usd"),
             scale=(0.003, 0.002, 0.003),   # mm → m，放大 2 倍；x/z 再額外放大 1.5 倍
             activate_contact_sensors=False,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
