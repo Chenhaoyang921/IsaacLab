@@ -20,12 +20,12 @@ if TYPE_CHECKING:
 # 各階段步數預算（step budget）：stage 0 / 1 / 2
 _STAGE_BUDGETS = (200, 300, 100)
 
-# 瓶子瞬移目標：固定世界座標（不隨花朵位置變動）
+# 瓶子瞬移目標：固定的「環境內局部座標」（不隨花朵位置變動，實際寫入時會再加上各環境的 env_origins）
 _BOTTLE_FIXED_XY = (0.4, 0.4)
 
 
 def _bottle_teleport_xy(env: ManagerBasedRLEnv, spawn_ids: torch.Tensor, flower_xy: torch.Tensor) -> torch.Tensor:
-    """回傳瓶子瞬移目標 XY：固定世界座標點，不受花朵位置或隨機偏移影響。"""
+    """回傳瓶子瞬移目標的環境內局部 XY：固定偏移點，不受花朵位置或隨機偏移影響（呼叫端需另外加上 env_origins 才是世界座標）。"""
     n = len(spawn_ids)
     return torch.tensor(_BOTTLE_FIXED_XY, device=env.device, dtype=flower_xy.dtype).expand(n, 2)
 
@@ -133,9 +133,10 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
         bottle = env.scene["bottle"]
         flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
         target_xy = _bottle_teleport_xy(env, spawn_ids, flower_pos[spawn_ids, :2])
+        env_origins_xy = env.scene.env_origins[spawn_ids, :2]
         root_state = bottle.data.root_state_w[spawn_ids].clone()
-        root_state[:, 0] = target_xy[:, 0]
-        root_state[:, 1] = target_xy[:, 1]
+        root_state[:, 0] = target_xy[:, 0] + env_origins_xy[:, 0]
+        root_state[:, 1] = target_xy[:, 1] + env_origins_xy[:, 1]
         root_state[:, 2] = 0.0
         root_state[:, 7:] = 0.0
         bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
