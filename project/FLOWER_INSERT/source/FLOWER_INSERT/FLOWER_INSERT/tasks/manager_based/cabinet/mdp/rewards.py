@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 ##==============================================================================================
 
 # 各階段步數預算（step budget）：stage 0 / 1 / 2
-_STAGE_BUDGETS = (200, 300, 100)
+_STAGE_BUDGETS = (400, 100, 100)
 
 # 瓶子瞬移目標：固定的「環境內局部座標」（不隨花朵位置變動，實際寫入時會再加上各環境的 env_origins）
 _BOTTLE_FIXED_XY = (0.4, 0.4)
@@ -43,7 +43,7 @@ def _stage_complete_condition(env: ManagerBasedRLEnv, stage_idx: int) -> torch.T
 def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     """事件驅動階段狀態機，每個 env.step 只更新一次（以 common_step_counter 為快取鍵）。
 
-    每個階段有各自的步數預算：stage0=200、stage1=300、stage2=100
+    每個階段有各自的步數預算：stage0=400、stage1=100、stage2=100
     - 預算耗盡前完成 → 結算 bonus = 剩餘步數，並立即進入下一階段（下一階段拿完整預算）
     - 預算耗盡仍未完成 → 該階段死亡（terminate）並扣分
     - stage 2 完成 → 任務成功（terminate）
@@ -107,7 +107,7 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     env._stage_fire_cache = fire
 
     # ── 全任務完成（stage 2 完成當步）：獨立計算「所有階段總步數 - 目前 step」的全域速度獎勵 ──
-    total_budget = sum(_STAGE_BUDGETS)   # 200+300+100 = 600
+    total_budget = sum(_STAGE_BUDGETS)   # 400+100+100 = 600
     s2_completed_now = completed_now & (cur == 2)
     all_complete_fire = torch.zeros(n, device=dev)
     if s2_completed_now.any():
