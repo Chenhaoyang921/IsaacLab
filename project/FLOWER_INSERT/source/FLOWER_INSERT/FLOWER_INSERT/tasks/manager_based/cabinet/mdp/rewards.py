@@ -18,14 +18,14 @@ if TYPE_CHECKING:
 ##==============================================================================================
 
 # 各階段步數預算（step budget）：stage 0 / 1 / 2
-_STAGE_BUDGETS = (200, 300, 100)
+_STAGE_BUDGETS = (400, 300, 300)
 
-# 瓶子瞬移目標：固定世界座標（不隨花朵位置變動）
+# 瓶子瞬移目標：固定的「環境內局部座標」（不隨花朵位置變動，實際寫入時會再加上各環境的 env_origins）
 _BOTTLE_FIXED_XY = (0.4, 0.4)
 
 
 def _bottle_teleport_xy(env: ManagerBasedRLEnv, spawn_ids: torch.Tensor, flower_xy: torch.Tensor) -> torch.Tensor:
-    """回傳瓶子瞬移目標 XY：固定世界座標點，不受花朵位置或隨機偏移影響。"""
+    """回傳瓶子瞬移目標的環境內局部 XY：固定偏移點，不受花朵位置或隨機偏移影響（呼叫端需另外加上 env_origins 才是世界座標）。"""
     n = len(spawn_ids)
     return torch.tensor(_BOTTLE_FIXED_XY, device=env.device, dtype=flower_xy.dtype).expand(n, 2)
 
@@ -43,7 +43,7 @@ def _stage_complete_condition(env: ManagerBasedRLEnv, stage_idx: int) -> torch.T
 def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     """事件驅動階段狀態機，每個 env.step 只更新一次（以 common_step_counter 為快取鍵）。
 
-    每個階段有各自的步數預算：stage0=200、stage1=300、stage2=100
+    每個階段有各自的步數預算：stage0=400、stage1=300、stage2=300
     - 預算耗盡前完成 → 結算 bonus = 剩餘步數，並立即進入下一階段（下一階段拿完整預算）
     - 預算耗盡仍未完成 → 該階段死亡（terminate）並扣分
     - stage 2 完成 → 任務成功（terminate）
@@ -107,7 +107,7 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
     env._stage_fire_cache = fire
 
     # ── 全任務完成（stage 2 完成當步）：獨立計算「所有階段總步數 - 目前 step」的全域速度獎勵 ──
-    total_budget = sum(_STAGE_BUDGETS)   # 200+300+100 = 600
+    total_budget = sum(_STAGE_BUDGETS)   # 400+300+300 = 1000
     s2_completed_now = completed_now & (cur == 2)
     all_complete_fire = torch.zeros(n, device=dev)
     if s2_completed_now.any():
@@ -133,12 +133,11 @@ def _update_stage_state(env: ManagerBasedRLEnv) -> None:
         bottle = env.scene["bottle"]
         flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
         target_xy = _bottle_teleport_xy(env, spawn_ids, flower_pos[spawn_ids, :2])
-        # root_state_w 是世界座標，需加上各 env 的原點偏移，否則多環境時所有瓶子會疊在同一點
-        origins = env.scene.env_origins[spawn_ids]
+        env_origins_xy = env.scene.env_origins[spawn_ids, :2]
         root_state = bottle.data.root_state_w[spawn_ids].clone()
-        root_state[:, 0] = target_xy[:, 0] + origins[:, 0]
-        root_state[:, 1] = target_xy[:, 1] + origins[:, 1]
-        root_state[:, 2] = origins[:, 2]
+        root_state[:, 0] = target_xy[:, 0] + env_origins_xy[:, 0]
+        root_state[:, 1] = target_xy[:, 1] + env_origins_xy[:, 1]
+        root_state[:, 2] = 0.0
         root_state[:, 7:] = 0.0
         bottle.write_root_state_to_sim(root_state, env_ids=spawn_ids)
 
@@ -392,13 +391,24 @@ def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
     )
 
 
-def s0_catch(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """tool_center 與花朵直線距離 < 0.003m 時，每 tick 給 3 分（第一階段限定）。"""
-    tag = _compute_stage_tag(env)
+def _is_caught(env: ManagerBasedRLEnv, threshold: float = 0.01) -> torch.Tensor:
+    """花朵是否在手上：tool_center 與花朵直線距離 < threshold。
+
+    S0 抓取判定用 0.003（嚴格）；S1 的持續閘門用預設 0.01（搬運中允許些微滑動）。
+
+    Returns:
+        shape (num_envs,) 的 float tensor：1.0 = 花在手上，0.0 = 沒抓住
+    """
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(flower_pos - tool_center_pos, dim=-1, p=2)
-    return tag[:, 0] * (distance < 0.003).float() * 3.0
+    return (distance < threshold).float()
+
+
+def s0_catch(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """tool_center 與花朵直線距離 < 0.003m 時，每 tick 給 3 分（第一階段限定）。"""
+    tag = _compute_stage_tag(env)
+    return tag[:, 0] * _is_caught(env, threshold=0.003) * 3.0
 
 
 def s0_touch_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -426,17 +436,23 @@ def s1_gripper_hold(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.
 
 
 def s1_approach_bottle(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=4。"""
+    """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=2。
+
+    僅在花朵仍握在夾爪中（is_catch：任一指施力 >= 1N 且指尖距花 < 5cm）時給分。
+    """
     tag = _compute_stage_tag(env)
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     bottle_top      = env.scene["bottle_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(bottle_top - tool_center_pos, dim=-1, p=2)
-    reward = torch.pow(1.0 / (1.0 + distance**2), 4)
-    return tag[:, 1] * reward
+    reward = torch.pow(1.0 / (1.0 + distance**2), 2)
+    return tag[:, 1] * is_catch(env) * reward
 
 
 def s1_align_flower_up(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Stage 1：花朵 +X 軸對齊世界 +Z（朝上），n=4 曲率。"""
+    """Stage 1：花朵 +X 軸對齊世界 +Z（朝上），n=4 曲率。
+
+    僅在花朵仍握在夾爪中（is_catch：任一指施力 >= 1N 且指尖距花 < 5cm）時給分。
+    """
     tag = _compute_stage_tag(env)
     flower_quat    = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
     flower_rot_mat = matrix_from_quat(flower_quat)
@@ -445,7 +461,7 @@ def s1_align_flower_up(env: ManagerBasedRLEnv) -> torch.Tensor:
     world_up[:, 2] = 1.0                       # (0, 0, 1)
     align  = (flower_x * world_up).sum(dim=-1).clamp(min=0.0)
     reward = torch.pow(align, 4)
-    return tag[:, 1] * reward
+    return tag[:, 1] * is_catch(env) * reward
 
 
 def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -509,8 +525,26 @@ def dead_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
 ## third stage  （僅狀態 [0, 0, 1, 0] 有效，tag[:, 2] == 1）
 ##==============================================================================================
 
+def _is_bottle_upright(env: ManagerBasedRLEnv, threshold: float = 0.966) -> torch.Tensor:
+    """瓶子是否直立：瓶身軸（局部 +Y，因瓶子繞 X 轉 90°）與世界 +Z 的夾角 <= 15 度。
+
+    Returns:
+        shape (num_envs,) 的 float tensor：1.0 = 直立，0.0 = 傾倒
+    """
+    bottle_quat    = env.scene["bottle"].data.root_quat_w
+    bottle_rot_mat = matrix_from_quat(bottle_quat)
+    bottle_axis    = bottle_rot_mat[..., 1]      # 局部 +Y = 瓶口朝向
+    world_up = torch.zeros_like(bottle_axis)
+    world_up[:, 2] = 1.0
+    align = (bottle_axis * world_up).sum(dim=-1)
+    return (align >= threshold).float()
+
+
 def s2_approach_inside(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """第三階段獎勵：花朵靠近瓶子原點，距離越近分數越高。"""
+    """第三階段獎勵：花朵靠近瓶子原點，距離越近分數越高。
+
+    瓶子必須直立（_is_bottle_upright）才給分。
+    """
     bottle_origin = env.scene["bottle"].data.root_pos_w
     flower_pos    = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
 
@@ -519,7 +553,7 @@ def s2_approach_inside(env: ManagerBasedRLEnv) -> torch.Tensor:
     reward   = torch.pow(reward, 3)
 
     tag = _compute_stage_tag(env)
-    return tag[:, 2] * reward
+    return tag[:, 2] * _is_bottle_upright(env) * reward
 
 
 def s2_release(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -533,7 +567,7 @@ def s2_release(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tenso
 
 def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 2 完成條件：花朵位於 bottle_inside 下方且 x/y 對齊（< 2cm），
-    且花朵 X 軸與世界 Z 軸夾角 <= 35 度。
+    花朵 X 軸與世界 Z 軸夾角 <= 35 度，且瓶子仍直立。
     """
     bottle_inside = env.scene["bottle_frame"].data.target_pos_w[..., 1, :]
     flower_pos    = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
@@ -549,7 +583,7 @@ def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
     align_cosine = (flower_x * world_up).sum(dim=-1)
     angle_ok = align_cosine >= 0.819
 
-    return below & near_x & near_y & angle_ok
+    return below & near_x & near_y & angle_ok & _is_bottle_upright(env).bool()
 
 
 def s2_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -563,7 +597,7 @@ def s2_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def all_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """全任務完成（Stage 2 完成當步）bonus = 所有階段總步數(600) - 目前 step，
+    """全任務完成（Stage 2 完成當步）bonus = 所有階段總步數(1000) - 目前 step，
     最終分數 = weight × 該剩餘值，與 s2_complete_bonus 各自獨立加總。
     """
     _update_stage_state(env)

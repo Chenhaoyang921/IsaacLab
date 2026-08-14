@@ -8,7 +8,6 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
-import importlib
 import sys
 
 from isaaclab.app import AppLauncher
@@ -94,7 +93,7 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -102,9 +101,6 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # import logger
 logger = logging.getLogger(__name__)
-
-# 讓 FLOWER_INSERT 不需 pip install 也能被找到
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "source", "FLOWER_INSERT"))
 
 import FLOWER_INSERT.tasks  # noqa: F401
 
@@ -194,10 +190,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    import importlib.metadata
-    from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
-    rsl_rl_version = importlib.metadata.version("rsl-rl-lib")
-    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, rsl_rl_version)
+    # 清掉 RslRlMLPModelCfg 帶著的已棄用欄位（stochastic / init_noise_std / ...），
+    # 否則會以未知關鍵字傳進 MLPModel.__init__()
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":

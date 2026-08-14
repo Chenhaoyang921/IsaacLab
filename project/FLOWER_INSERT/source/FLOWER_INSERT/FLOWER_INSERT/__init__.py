@@ -1,1 +1,2 @@
-"""FLOWER_INSERT: 三階段插花任務（抓取 → 對齊 → 插入）訓練框架。"""
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# SPDX-License-Identifier: BSD-3-Clause
