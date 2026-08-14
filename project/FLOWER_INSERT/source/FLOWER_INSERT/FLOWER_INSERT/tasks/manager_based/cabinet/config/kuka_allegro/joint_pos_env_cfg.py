@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
@@ -91,6 +91,13 @@ class KukaAllegroCabinetEnvCfg(FlowerEnvCfg):
                     name="tool_rightfinger",
                 ),
             ],
+        )
+
+        # 觸覺回饋：把兩根 biotac 指尖的接觸力加進 policy 的觀察值（+6 維）
+        # 這是 is_catch() 用的同一份訊號，讓策略能直接「感覺到」握力
+        self.observations.policy.fingertip_contact = ObsTerm(
+            func=mdp.fingertip_contact_forces,
+            clip=(-20.0, 20.0),  # 指尖接觸力正常在 20N 以內
         )
 
         # override rewards：把原本指向 panda_finger 的 asset_cfg 改成 Allegro 指關節
