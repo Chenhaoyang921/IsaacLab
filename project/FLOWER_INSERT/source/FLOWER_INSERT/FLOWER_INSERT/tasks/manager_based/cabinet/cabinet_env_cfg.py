@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -39,9 +38,6 @@ from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 FRAME_MARKER_SMALL_CFG = FRAME_MARKER_CFG.copy()
 FRAME_MARKER_SMALL_CFG.markers["frame"].scale = (0.10, 0.10, 0.10)
 
-# 資產目錄（相對於本檔案），避免寫死特定電腦的絕對路徑
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-
 
 ##
 # Scene definition
@@ -70,16 +66,17 @@ class FlowerSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Flower",
         spawn=sim_utils.UsdFileCfg(
             # 花朵 USD 模型路徑
-            usd_path=os.path.join(ASSETS_DIR, "Flower_02.usd"),
+            usd_path="C:/Users/User/IsaacLab/project/FLOWER_INSERT/source/FLOWER_INSERT/FLOWER_INSERT/tasks/manager_based/cabinet/assets/Flower_02.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 rigid_body_enabled=True,
                 kinematic_enabled=False,
             ),
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.3, 0, 0.025),  # 花朵放置的位置
-            rot=(1.0, 0.0, 0.0, 0.0),  # 繞 Z 軸再轉 180° → X 軸朝前（+X）
+            rot=(0.0, 0.0, 0.0, 1.0),
         ),
     )
 
@@ -105,7 +102,7 @@ class FlowerSceneCfg(InteractiveSceneCfg):
     bottle = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Bottle",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=os.path.join(ASSETS_DIR, "BOTTLE.usd"),
+            usd_path="C:/Users/User/IsaacLab/project/FLOWER_INSERT/source/FLOWER_INSERT/FLOWER_INSERT/tasks/manager_based/cabinet/assets/BOTTLE.usd",
             scale=(0.003, 0.002, 0.003),   # mm → m，放大 2 倍；x/z 再額外放大 1.5 倍
             activate_contact_sensors=False,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -138,18 +135,18 @@ class FlowerSceneCfg(InteractiveSceneCfg):
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="{ENV_REGEX_NS}/Bottle",
-                name="bottle_top",           # index 0：瓶口位置（124mm × 2 = 0.248m）
+                name="bottle_top",           # index 0：瓶口位置（238mm × 2 = 0.476m）
                 offset=OffsetCfg(
-                    pos=(0.0, 0.248, 0.0),
-                    rot=(0.7071, 0.7071, 0.0, 0.0),
+                    pos=(0.0, 0.476, 0.0),
+                    rot=(1.0, 0.0, 0.0, 0.0),
                 ),
             ),
             FrameTransformerCfg.FrameCfg(
                 prim_path="{ENV_REGEX_NS}/Bottle",
-                name="bottle_inside",        # index 1：瓶內基準點（0.4m）
+                name="bottle_inside",        # index 1：瓶內基準點（124mm × 2 = 0.248m）
                 offset=OffsetCfg(
-                    pos=(0.0, 0.4, 0.0),
-                    rot=(0.7071, 0.7071, 0.0, 0.0),
+                    pos=(0.0, 0.248, 0.0),
+                    rot=(1.0, 0.0, 0.0, 0.0),
                 ),
             ),
         ],
@@ -277,7 +274,6 @@ class EventCfg:
 
 
 
-
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
@@ -303,23 +299,21 @@ class RewardsCfg:
     )
 
     s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=10.0)
-    s0_catch               = RewTerm(func=mdp.s0_catch, weight=50.0)
-    s0_touch_flower        = RewTerm(func=mdp.s0_touch_flower, weight=8.0)
-    # dead_penalty = -λ × cum_end(400+100+100=600)，λ=1
-    s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-600.0)
-    # complete_bonus = weight × 剩餘步數（越早完成剩越多）；weight = c × cum_start(400)，c=0.1
-    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=40.0)
+    s0_catch               = RewTerm(func=mdp.s0_catch, weight=8.0)
+    s0_touch_flower        = RewTerm(func=mdp.s0_touch_flower, weight=10.0)
+    s0_dead_penalty           = RewTerm(func=mdp.dead_penalty, weight=-500.0)
+    # complete_bonus = 該階段所有正向獎勵權重總和（0.2+1.0+0.5+4.0+10.0+8.0+10.0）
+    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=33.7)
 
     # ── Stage 1：移動到瓶口 + 花朵 +X 朝上 ──────────────────────────────
-    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=80.0)
-    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=20.0)
-    # dead_penalty = -λ × cum_end(100+100=200)，λ=1
-    s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-200.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(400+100=500)，c=0.1
-    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=50.0)
+    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=50.0)
+    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=50.0)
+    s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-300.0)
+    # complete_bonus = 該階段所有正向獎勵權重總和（50.0+50.0）
+    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=100.0)
 
     # ── Stage 2：插入瓶子 ────────────────────────────────────────────────
-    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=120.0)
+    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=80.0)
 
     s2_release = RewTerm(
         func=mdp.s2_release,
@@ -327,14 +321,12 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=MISSING)},
     )
 
-    # dead_penalty = -λ × cum_end(100)，λ=1
-    s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-100.0)
-    # complete_bonus = weight × 剩餘步數；weight = c × cum_start(400+100+100=600)，c=0.1
-    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=60.0)
+    # complete_bonus = 該階段所有正向獎勵權重總和（80.0+0.0）
+    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=80.0)
 
     # ── All stages ──────────────────────────────────────────────────────
-    # 全任務完成（Stage 2 完成當步）獨立速度獎勵：weight × (所有階段總步數600 - 目前 step)
-    all_complete_bonus = RewTerm(func=mdp.all_complete_bonus, weight=10.0)
+    # all_complete_bonus = s0_complete_bonus + s1_complete_bonus + s2_complete_bonus（33.7+100.0+80.0）
+    all_complete_bonus = RewTerm(func=mdp.all_complete_bonus, weight=213.7)
     # 動作平滑懲罰
     all_action_rate_l2 = RewTerm(func=mdp.all_action_rate_l2, weight=-0.001)
     all_joint_vel_l2   = RewTerm(func=mdp.all_joint_vel_l2, weight=-0.001)
@@ -360,19 +352,13 @@ class CurriculumCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)   # 600 steps 安全網
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)   # 600 steps 到就重置
 
-    # Stage 0 預算(300步)耗盡仍未完成 → 死亡，並給予 -500 懲罰
+    # Phase 0（0–5s）時限內未完成第一階段 → 死亡，並給予 -500 懲罰
     phase0_dead = DoneTerm(func=mdp.phase0_dead_termination, time_out=False)
 
-    # Stage 1 預算(120步)耗盡仍未完成 → 死亡，並給予 -300 懲罰
+    # Phase 1（5–7s）時限內未完成第二階段 → 死亡，並給予 -500 懲罰
     s1_dead = DoneTerm(func=mdp.s1_dead_termination, time_out=False)
-
-    # Stage 2 預算(180步)耗盡仍未完成 → 死亡，並給予 -200 懲罰
-    s2_dead = DoneTerm(func=mdp.s2_dead_termination, time_out=False)
-
-    # Stage 2 完成 → 任務成功，結束回合
-    task_success = DoneTerm(func=mdp.task_success_termination, time_out=False)
 
 
 ##
@@ -402,7 +388,7 @@ class FlowerEnvCfg(ManagerBasedRLEnvCfg):
         """初始化後的參數微調。"""
         # general settings
         self.decimation = 1                 # 控制與模擬的頻率比（1 代表每一幀都控制）
-        self.episode_length_s = 10.0       # 630 steps @ 60Hz（stage budget 總和 600 步 + 30 步緩衝，避免被全域 time_out 搶先攔截 s2 判斷）
+        self.episode_length_s = 10.0        # 600 steps @ 60Hz
         # 設定視窗攝影機位置
         self.viewer.eye = (-2.0, 2.0, 2.0)
         self.viewer.lookat = (0.8, 0.0, 0.5)

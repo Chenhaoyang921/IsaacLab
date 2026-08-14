@@ -29,9 +29,7 @@ class StageGatedJointPositionAction(JointPositionAction):
 
     def process_actions(self, actions: torch.Tensor) -> None:
         from .rewards import _compute_stage_tag
-        from .rewards import _update_stage_state
 
-        _update_stage_state(self._env)  # 強制刷新階段狀態，確保讀取到最新標籤
         stage_tag = _compute_stage_tag(self._env)
         in_stage2 = stage_tag[:, 1].bool()       # [0,1,0,0] = 第二階段
 
@@ -84,16 +82,54 @@ class ProgrammaticGripperActionCfg(BinaryJointPositionActionCfg):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class CooldownBinaryGripperAction(BinaryJointPositionAction):
-    """二元夾爪動作，全程無冷卻/切換次數限制，直接透傳 RL 輸出。"""
+    """二元夾爪動作，每次開/關切換後鎖定 0.1 秒才能再次改變。"""
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
+        self._cooldown_steps = int(1.0 / env.step_dt)
         self._last_command = torch.ones(env.num_envs, 1, device=env.device)
+        self._cooldown_counter = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        self._gripper_locked = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     def process_actions(self, actions: torch.Tensor) -> None:
-        # 全程直接透傳，無冷卻、無切換次數限制
-        self._last_command = actions.clone()
-        super().process_actions(actions)
+        num_steps_per_env = 192
+        current_epoch = self._env.common_step_counter // num_steps_per_env
+
+        # 環境重置時清除所有狀態
+        reset_mask = self._env.episode_length_buf == 0
+        self._cooldown_counter[reset_mask] = 0
+        self._gripper_locked[reset_mask] = False
+
+        # epoch < 100：無冷卻，直接透傳
+        if current_epoch < 100:
+            self._last_command = actions.clone()
+            super().process_actions(actions)
+            return
+
+        effective = actions.clone()
+
+        # epoch >= 200：閉合後永久鎖定，不能再張開
+        if current_epoch >= 200:
+            effective[self._gripper_locked] = -1.0
+            just_closed = (~(effective > 0).squeeze(-1)) & ~self._gripper_locked
+            self._gripper_locked[just_closed] = True
+            self._last_command = effective.clone()
+            super().process_actions(effective)
+            return
+
+        # epoch 100~199：1 秒冷卻
+        on_cooldown = self._cooldown_counter > 0
+        effective[on_cooldown] = self._last_command[on_cooldown]
+
+        new_sign = (effective > 0).float()
+        old_sign = (self._last_command > 0).float()
+        changed = (new_sign != old_sign).squeeze(-1)
+
+        self._cooldown_counter[changed] = self._cooldown_steps
+        self._cooldown_counter = (self._cooldown_counter - 1).clamp(min=0)
+
+        self._last_command = effective.clone()
+        super().process_actions(effective)
 
 
 @configclass
