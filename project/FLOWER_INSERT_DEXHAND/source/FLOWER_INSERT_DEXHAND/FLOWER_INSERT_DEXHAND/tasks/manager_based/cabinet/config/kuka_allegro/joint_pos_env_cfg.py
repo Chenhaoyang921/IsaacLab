@@ -8,8 +8,8 @@ from isaaclab.utils import configclass
 
 from isaaclab_assets.robots import KUKA_ALLEGRO_CFG
 
-from FLOWER_INSERT.tasks.manager_based.cabinet import mdp
-from FLOWER_INSERT.tasks.manager_based.cabinet.cabinet_env_cfg import (  # isort: skip
+from FLOWER_INSERT_DEXHAND.tasks.manager_based.cabinet import mdp
+from FLOWER_INSERT_DEXHAND.tasks.manager_based.cabinet.cabinet_env_cfg import (  # isort: skip
     FRAME_MARKER_SMALL_CFG,
     FlowerEnvCfg,
 )

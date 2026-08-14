@@ -133,3 +133,17 @@ def ee_quat(env: ManagerBasedRLEnv, make_quat_unique: bool = True) -> torch.Tens
     # 為了避免神經網路感到困惑 (同一個姿勢卻有兩種不同的輸入數值)，
     # 這裡使用 quat_unique 強制統一格式，這對 AI 學習非常有幫助！
     return math_utils.quat_unique(ee_quat) if make_quat_unique else ee_quat
+
+
+def fingertip_contact_forces(env: ManagerBasedRLEnv, sensor_name: str = "contact_forces") -> torch.Tensor:
+    """指尖接觸力（觸覺回饋），世界座標下的淨力向量攤平。
+
+    讀取 contact_forces 感測器的 net_forces_w，形狀 (num_envs, num_bodies, 3)，
+    攤平成 (num_envs, num_bodies * 3)。掛在 index / thumb 兩根 biotac 指尖上，所以是 6 維。
+
+    這是 is_catch() 判定抓取所用的同一份訊號，差別在於這裡把它餵給 policy 當觀察值，
+    讓策略能「感覺到」握力，而不只是由獎勵間接反映。
+    """
+    contact_sensor = env.scene[sensor_name]
+    net_forces = contact_sensor.data.net_forces_w  # (num_envs, num_bodies, 3)
+    return net_forces.view(env.num_envs, -1)
