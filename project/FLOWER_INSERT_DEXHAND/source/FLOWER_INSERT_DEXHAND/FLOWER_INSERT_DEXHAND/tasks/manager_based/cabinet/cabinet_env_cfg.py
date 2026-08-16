@@ -282,7 +282,7 @@ class EventCfg:
 # ── 各階段密集獎勵權重（唯一來源，complete_bonus 由這些加總推導）──────────
 # s2_release 不計入：weight 在這裡是 MISSING，實際由 franka 的 joint_pos_env_cfg.py
 # 覆寫為 0.0，加不加都不影響總和。
-_S0_DENSE_WEIGHTS = (0.2, 1.0, 10.0)       # approach_flower, align_flower, multi_lift
+_S0_DENSE_WEIGHTS = (0.2, 10.0)            # approach_flower, multi_lift
 _S1_DENSE_WEIGHTS = (50.0, 50.0)           # approach_bottle, align_flower_up
 _S2_DENSE_WEIGHTS = (120.0,)               # approach_inside
 
@@ -298,9 +298,8 @@ class RewardsCfg:
     """獎勵機制定義。"""
     # ── Stage 0：接近、對齊、抓取、舉起花朵 ────────────────────────────
     s0_approach_flower = RewTerm(func=mdp.s0_approach_flower, weight=_S0_DENSE_WEIGHTS[0], params={"threshold": 0.2})
-    s0_align_flower    = RewTerm(func=mdp.s0_align_flower, weight=_S0_DENSE_WEIGHTS[1])
 
-    s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=_S0_DENSE_WEIGHTS[2])
+    s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=_S0_DENSE_WEIGHTS[1])
     # dead_penalty = -λ × cum_end(400+300+200=900)，λ=1
     s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-900.0)
     # complete_bonus 權重 = S0 密集獎勵權重相加

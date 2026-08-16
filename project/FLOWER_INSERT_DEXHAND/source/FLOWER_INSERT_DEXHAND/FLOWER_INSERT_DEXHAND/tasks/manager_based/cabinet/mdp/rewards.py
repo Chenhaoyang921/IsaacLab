@@ -203,51 +203,6 @@ def s0_approach_flower(env: ManagerBasedRLEnv, threshold: float) -> torch.Tensor
     return tag[:, 0] * reward
 
 
-def s0_align_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Reward for aligning the end-effector with the flower.
-
-    The reward is based on the alignment of the gripper with the flower. It is computed as follows:
-
-    .. math::
-
-        reward = 0.5 * (align_z^2 + align_x^2)
-
-    where :math:`align_z` is the dot product of the z direction of the gripper and the -x direction of the flower
-    and :math:`align_x` is the dot product of the x direction of the gripper and the -y direction of the flower.
-    """
-
-    """姿態對齊獎勵：獎勵末端執行器與把手的角度對齊。
-
-    獎勵取決於夾爪與把手的軸向一致性。計算方式如下：
-    .. math::
-        reward = 0.5 * (align_z^2 + align_x^2)
-
-    其中 align_z 是夾爪 Z 軸與把手 -X 軸的點積，
-    align_x 是夾爪 X 軸與把手 -Y 軸的點積。
-    """
-
-
-    # 取得 panda_hand 工具中心方向（index 0 = ee_tcp）
-    ee_tcp_quat = env.scene["ee_frame"].data.target_quat_w[..., 0, :]
-    flower_quat = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
-
-    ee_tcp_rot_mat = matrix_from_quat(ee_tcp_quat)
-    flower_mat = matrix_from_quat(flower_quat)
-
-    # tool_center X 軸追蹤 flower X 軸（平行或反平行皆給分）
-    ee_tcp_x = ee_tcp_rot_mat[..., 0]
-    flower_x = flower_mat[..., 0]
-
-    align_x = torch.bmm(ee_tcp_x.unsqueeze(1), flower_x.unsqueeze(-1)).squeeze(-1).squeeze(-1)
-
-    reward = align_x ** 4
-
-    # 兩個條件各佔 0.5，合計最高 1 分
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
-
-
-
 def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
     """多階段拾起獎勵：將拾起花朵任務分為「簡單、中等、困難」三個層次。
 
