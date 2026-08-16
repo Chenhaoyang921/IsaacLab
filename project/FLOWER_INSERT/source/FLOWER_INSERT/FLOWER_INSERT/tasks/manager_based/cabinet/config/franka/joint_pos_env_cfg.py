@@ -78,8 +78,6 @@ class FrankaCabinetEnvCfg(FlowerEnvCfg):
         # override rewards
         self.rewards.s2_release.weight = 0.0
         self.rewards.s2_release.params["asset_cfg"].joint_names = ["panda_finger_.*"]
-        self.rewards.s0_grasp_flower.weight = 0.5
-        self.rewards.s0_lift_when_grasped.params["asset_cfg"].joint_names = ["panda_finger_.*"]
 
 
 @configclass

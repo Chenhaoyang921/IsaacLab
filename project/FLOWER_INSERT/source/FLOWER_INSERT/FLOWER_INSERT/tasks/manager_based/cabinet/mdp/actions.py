@@ -80,55 +80,20 @@ class ProgrammaticGripperActionCfg(BinaryJointPositionActionCfg):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 夾爪動作：抓到花之後鎖定
+# 夾爪動作：帶 1 秒冷卻的二元控制
 # ──────────────────────────────────────────────────────────────────────────────
 
 class CooldownBinaryGripperAction(BinaryJointPositionAction):
-    """二元夾爪動作：抓到花（is_catch）之後鎖定，不再接受 RL 輸入。
-
-    epoch < LOCK_AFTER_EPOCH 期間不啟用鎖定，全程由 RL 自由控制，讓前期能自由探索抓取。
-    鎖定的指令是「首次抓到當下生效的那個指令」。因為 is_catch 需要手指施力 >= 1N，
-    成立時該指令必然是閉合，所以等於一路握到回合結束。回合重置時解鎖。
-    """
-
-    # 從第幾個 epoch 開始啟用鎖定
-    LOCK_AFTER_EPOCH = 30
-    # 每個 epoch 的步數，需與 rsl_rl_ppo_cfg.py 的 num_steps_per_env 一致
-    NUM_STEPS_PER_EPOCH = 192
+    """二元夾爪動作，全程無冷卻/切換次數限制，直接透傳 RL 輸出。"""
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         self._last_command = torch.ones(env.num_envs, 1, device=env.device)
-        self._locked = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-        self._latched_command = torch.zeros(env.num_envs, 1, device=env.device)
 
     def process_actions(self, actions: torch.Tensor) -> None:
-        from .rewards import is_catch
-
-        # epoch 30 之前：不鎖定，直接透傳
-        current_epoch = self._env.common_step_counter // self.NUM_STEPS_PER_EPOCH
-        if current_epoch < self.LOCK_AFTER_EPOCH:
-            self._locked[:] = False
-            self._last_command = actions.clone()
-            super().process_actions(actions)
-            return
-
-        # 新回合解鎖（process_actions 在該回合第一步時 episode_length_buf 尚為 0）
-        reset_mask = self._env.episode_length_buf == 0
-        self._locked[reset_mask] = False
-
-        # 已鎖定的環境忽略 RL 輸入，沿用鎖定當下的指令
-        effective = actions.clone()
-        effective[self._locked] = self._latched_command[self._locked]
-
-        # 首次抓到 → 記下當下指令並上鎖
-        caught = is_catch(self._env).bool()
-        newly_locked = caught & ~self._locked
-        self._latched_command[newly_locked] = effective[newly_locked]
-        self._locked |= caught
-
-        self._last_command = effective.clone()
-        super().process_actions(effective)
+        # 全程直接透傳，無冷卻、無切換次數限制
+        self._last_command = actions.clone()
+        super().process_actions(actions)
 
 
 @configclass

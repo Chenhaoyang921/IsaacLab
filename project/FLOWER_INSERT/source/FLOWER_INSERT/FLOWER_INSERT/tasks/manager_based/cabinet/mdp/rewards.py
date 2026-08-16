@@ -247,101 +247,6 @@ def s0_align_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
     return tag[:, 0] * reward
 
 
-def s0_grasp_flower(
-    env: ManagerBasedRLEnv, threshold: float, open_joint_pos: float, asset_cfg: SceneEntityCfg
-) -> torch.Tensor:
-    """Reward for closing the fingers when being close to the flower.
-
-    The :attr:`threshold` is the distance from the flower at which the fingers should be closed.
-    The :attr:`open_joint_pos` is the joint position when the fingers are open.
-
-    Note:
-        It is assumed that zero joint position corresponds to the fingers being closed.
-    """
-    """抓取動作獎勵：當距離把手夠近時，獎勵「閉合手指」的動作。
-
-    :attr:`threshold` 是距離門檻。
-    :attr:`open_joint_pos` 是夾爪全開時的關節位置。
-
-    註：這裡假設關節位置為 0 時代表手指完全閉合。
-    """
-
-
-    flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-    # 取得夾爪目前的關節位置
-    gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
-
-    # 取得兩指尖位置，計算中心點
-    ee_fingertips_w = env.scene["ee_frame"].data.target_pos_w[..., 1:, :]
-    lfinger_pos = ee_fingertips_w[..., 0, :]
-    rfinger_pos = ee_fingertips_w[..., 1, :]
-    fingers_mid = (lfinger_pos + rfinger_pos) / 2.0
-
-    # 計算兩指中心點與花朵的距離
-    distance = torch.norm(flower_pos - fingers_mid, dim=-1, p=2)
-    is_close = distance <= threshold
-
-    # ── 角度條件：兩指連線與花朵 X 軸夾角 ≥ 45° 才允許給分 ──
-    # 取得花朵 X 軸
-    flower_quat = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
-    flower_rot_mat = matrix_from_quat(flower_quat)
-    flower_x = flower_rot_mat[..., 0]  # (num_envs, 3)
-    finger_vec = rfinger_pos - lfinger_pos
-    finger_vec_normalized = finger_vec / (torch.norm(finger_vec, dim=-1, keepdim=True) + 1e-6)
-
-    # |cos θ| ≤ cos(45°) ≈ 0.707 → 夾角 ≥ 45°
-    cos_angle = torch.sum(finger_vec_normalized * flower_x, dim=-1)
-    is_aligned = torch.abs(cos_angle) <= 0.707  # 夾角在 45°~135° 之間
-
-    reward = torch.sum(open_joint_pos - gripper_joint_pos, dim=-1)
-
-    # 同時滿足：距離夠近 AND 方向正確，才獎勵閉合
-    reward = is_close * is_aligned * reward
-
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * reward
-
-
-def s0_lift_when_grasped(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """夾緊後提升獎勵：當兩支夾爪間距小於 1.5cm 時，獎勵 EE 的絕對高度。
-
-    每提高 1mm 給 0.01 分，上限 0.2 分。夾爪間距大於 1.5cm 時歸零。
-    """
-
-
-    # 取得夾爪目前的關節位置
-    gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
-
-    # 兩根手指各自代表一半的開合量，相加即為夾爪總間距
-    gripper_gap = torch.sum(gripper_joint_pos, dim=-1)  # 單位：公尺
-
-    # 夾爪間距 < 1.5cm 才觸發
-    is_closed = (gripper_gap < 0.03).float()
-
-    # 取得兩指尖中心點與花朵的距離，< 2cm 才觸發
-    ee_fingertips_w = env.scene["ee_frame"].data.target_pos_w[..., 1:, :]
-    lfinger_pos = ee_fingertips_w[..., 0, :]
-    rfinger_pos = ee_fingertips_w[..., 1, :]
-    fingers_mid = (lfinger_pos + rfinger_pos) / 2.0
-    flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-    flower_dist = torch.norm(flower_pos - fingers_mid, dim=-1, p=2)
-    is_flower_grasped = (flower_dist < 0.03).float()
-
-    # 取得 EE 世界座標 Z 高度（距離地面高度）
-    ee_pos_w = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
-    ee_height = ee_pos_w[:, 2]  # 單位：公尺
-
-    # 每 1mm (0.001m) = 0.01 分，換算係數 = 10
-    # 上限 0.2 分（即 EE 高度 2cm 以上即封頂）
-    reward = torch.clamp(ee_height * 10.0, min=0.0, max=0.2)
-    apply_reward = is_closed * is_flower_grasped * reward
-
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * apply_reward
-
-
-
-
 
 def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
     """多階段拾起獎勵：將拾起花朵任務分為「簡單、中等、困難」三個層次。
@@ -359,6 +264,14 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
     is_graspable = align_grasp_around_flower(env).float()
     lift_height  = torch.clamp(flower_pos_w[:, 2] - 0.03, min=0.0)
 
+    # 花朵相對位置是否較上一步移動（新回合的第一步沒有上一步可比，視為未移動）
+    if not hasattr(env, "_s0_prev_flower_pos"):
+        env._s0_prev_flower_pos = flower_pos_w.clone()
+    reset_mask = env.episode_length_buf == 1
+    env._s0_prev_flower_pos[reset_mask] = flower_pos_w[reset_mask]
+    move_dist = torch.norm(flower_pos_w - env._s0_prev_flower_pos, dim=-1, p=2)
+    move = (move_dist > 1e-4).float()
+    env._s0_prev_flower_pos = flower_pos_w.clone()
 
     # 第一階段：只要花朵有離地超過 0.04m 就給 30 分
     open_easy = (lift_height > 0.04)
@@ -372,7 +285,7 @@ def s0_multi_lift(env: ManagerBasedRLEnv) -> torch.Tensor:
     open_hard_catch = (lift_height > 0.3) * is_graspable * caught
 
 
-    reward = open_easy + open_easy_catch + open_medium_catch + open_hard_catch
+    reward = move * 0.1 + open_easy + open_easy_catch + open_medium_catch + open_hard_catch
 
     tag = _compute_stage_tag(env)
     return tag[:, 0] * reward
@@ -389,32 +302,6 @@ def s0_complete_bonus(env: ManagerBasedRLEnv) -> torch.Tensor:
         env._stage_fire_cache,
         torch.zeros_like(env._stage_fire_cache),
     )
-
-
-def _is_caught(env: ManagerBasedRLEnv, threshold: float = 0.01) -> torch.Tensor:
-    """花朵是否在手上：tool_center 與花朵直線距離 < threshold。
-
-    S0 抓取判定用 0.003（嚴格）；S1 的持續閘門用預設 0.01（搬運中允許些微滑動）。
-
-    Returns:
-        shape (num_envs,) 的 float tensor：1.0 = 花在手上，0.0 = 沒抓住
-    """
-    tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
-    flower_pos = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
-    distance = torch.norm(flower_pos - tool_center_pos, dim=-1, p=2)
-    return (distance < threshold).float()
-
-
-def s0_catch(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """tool_center 與花朵直線距離 < 0.003m 時，每 tick 給 3 分（第一階段限定）。"""
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * _is_caught(env, threshold=0.003) * 3.0
-
-
-def s0_touch_flower(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """夾住花朵時每 tick 給分（第一階段限定）。"""
-    tag = _compute_stage_tag(env)
-    return tag[:, 0] * is_catch(env)
 
 
 def s1_arm_hold(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -435,23 +322,33 @@ def s1_gripper_hold(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.
     return tag[:, 1] * held_still
 
 
+def _is_flower_lifted(env: ManagerBasedRLEnv, min_height: float = 0.05) -> torch.Tensor:
+    """花朵世界座標高度是否達到 min_height。
+
+    Returns:
+        shape (num_envs,) 的 float tensor：1.0 = 達標，0.0 = 太低
+    """
+    flower_pos_w = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
+    return (flower_pos_w[:, 2] >= min_height).float()
+
+
 def s1_approach_bottle(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 1：引導 tool_center 移動到瓶口（bottle_top）位置，距離平方反比 n=2。
 
-    僅在花朵仍握在夾爪中（is_catch：任一指施力 >= 1N 且指尖距花 < 5cm）時給分。
+    僅在花朵仍握在夾爪中（is_catch）且花朵高度 >= 0.05m 時給分。
     """
     tag = _compute_stage_tag(env)
     tool_center_pos = env.scene["ee_frame"].data.target_pos_w[..., 0, :]
     bottle_top      = env.scene["bottle_frame"].data.target_pos_w[..., 0, :]
     distance = torch.norm(bottle_top - tool_center_pos, dim=-1, p=2)
     reward = torch.pow(1.0 / (1.0 + distance**2), 2)
-    return tag[:, 1] * is_catch(env) * reward
+    return tag[:, 1] * is_catch(env) * _is_flower_lifted(env) * reward
 
 
 def s1_align_flower_up(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Stage 1：花朵 +X 軸對齊世界 +Z（朝上），n=4 曲率。
 
-    僅在花朵仍握在夾爪中（is_catch：任一指施力 >= 1N 且指尖距花 < 5cm）時給分。
+    僅在花朵仍握在夾爪中（is_catch）且花朵高度 >= 0.05m 時給分。
     """
     tag = _compute_stage_tag(env)
     flower_quat    = env.scene["flower_frame"].data.target_quat_w[..., 0, :]
@@ -461,7 +358,7 @@ def s1_align_flower_up(env: ManagerBasedRLEnv) -> torch.Tensor:
     world_up[:, 2] = 1.0                       # (0, 0, 1)
     align  = (flower_x * world_up).sum(dim=-1).clamp(min=0.0)
     reward = torch.pow(align, 4)
-    return tag[:, 1] * is_catch(env) * reward
+    return tag[:, 1] * is_catch(env) * _is_flower_lifted(env) * reward
 
 
 def _is_s1_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -557,12 +454,15 @@ def s2_approach_inside(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def s2_release(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """第三階段放手獎勵：獎勵張開夾爪，夾爪越開分數越高。"""
+    """第三階段放手獎勵：獎勵張開夾爪，夾爪越開分數越高。
+
+    瓶子必須直立（_is_bottle_upright）才給分。
+    """
     gripper_joint_pos = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
     reward = torch.sum(gripper_joint_pos, dim=-1)
 
     tag = _compute_stage_tag(env)
-    return tag[:, 2] * reward
+    return tag[:, 2] * _is_bottle_upright(env) * reward
 
 
 def _is_s2_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -627,22 +527,11 @@ def task_success_termination(env: ManagerBasedRLEnv) -> torch.Tensor:
 ##==============================================================================================
 
 def _first_stage_complete(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """第一階段完成：與 multi_stage_pick_up 的 open_hard_catch 相同條件。
-
-    同時滿足：
-    - 花朵高度 > 0.3m（lift_height > 0.3）
-    - 兩指在花朵 5cm 以內（is_graspable）
-    - 任一手指施力 >= 1N 且靠近花朵（caught）
-    """
+    """第一階段完成：花朵高度 > 0.3m（lift_height > 0.3）。"""
     flower_pos_w = env.scene["flower_frame"].data.target_pos_w[..., 0, :]
     lift_height  = torch.clamp(flower_pos_w[:, 2] - 0.03, min=0.0)
 
-    caught       = is_catch(env)
-    is_graspable = align_grasp_around_flower(env)
-
-    open_hard_catch = (lift_height > 0.3) & is_graspable & caught.bool()
-
-    return open_hard_catch.float()
+    return (lift_height > 0.3).float()
 
 
 ##==============================================================================================

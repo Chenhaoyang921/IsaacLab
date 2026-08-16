@@ -279,47 +279,43 @@ class EventCfg:
 
 
 
+# ── 各階段密集獎勵權重（唯一來源，complete_bonus 由這些加總推導）──────────
+# s2_release 不計入：weight 在這裡是 MISSING，實際由 franka 的 joint_pos_env_cfg.py
+# 覆寫為 0.0，加不加都不影響總和。
+_S0_DENSE_WEIGHTS = (0.2, 1.0, 10.0)       # approach_flower, align_flower, multi_lift
+_S1_DENSE_WEIGHTS = (50.0, 50.0)           # approach_bottle, align_flower_up
+_S2_DENSE_WEIGHTS = (120.0,)               # approach_inside
+
+S0_COMPLETE_BONUS_WEIGHT = sum(_S0_DENSE_WEIGHTS)
+S1_COMPLETE_BONUS_WEIGHT = sum(_S1_DENSE_WEIGHTS)
+S2_COMPLETE_BONUS_WEIGHT = sum(_S2_DENSE_WEIGHTS)
+ALL_COMPLETE_BONUS_WEIGHT = S0_COMPLETE_BONUS_WEIGHT + S1_COMPLETE_BONUS_WEIGHT + S2_COMPLETE_BONUS_WEIGHT
+
+
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP."""
     """獎勵機制定義。"""
     # ── Stage 0：接近、對齊、抓取、舉起花朵 ────────────────────────────
-    s0_approach_flower = RewTerm(func=mdp.s0_approach_flower, weight=0.2, params={"threshold": 0.2})
-    s0_align_flower    = RewTerm(func=mdp.s0_align_flower, weight=1.0)
+    s0_approach_flower = RewTerm(func=mdp.s0_approach_flower, weight=_S0_DENSE_WEIGHTS[0], params={"threshold": 0.2})
+    s0_align_flower    = RewTerm(func=mdp.s0_align_flower, weight=_S0_DENSE_WEIGHTS[1])
 
-    s0_grasp_flower = RewTerm(
-        func=mdp.s0_grasp_flower,
-        weight=MISSING,
-        params={
-            "threshold": 0.05,
-            "open_joint_pos": 0.04,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["panda_finger.*"]),
-        },
-    )
-
-    s0_lift_when_grasped = RewTerm(
-        func=mdp.s0_lift_when_grasped,
-        weight=4.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["panda_finger.*"])},
-    )
-
-    s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=10.0)
-    s0_catch               = RewTerm(func=mdp.s0_catch, weight=50.0)
-    s0_touch_flower        = RewTerm(func=mdp.s0_touch_flower, weight=8.0)
+    s0_multi_lift          = RewTerm(func=mdp.s0_multi_lift, weight=_S0_DENSE_WEIGHTS[2])
     # dead_penalty = -λ × cum_end(400+300+200=900)，λ=1
     s0_dead_penalty        = RewTerm(func=mdp.dead_penalty, weight=-900.0)
-    # complete_bonus = weight × 剩餘步數（越早完成剩越多）
-    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=50.0)
+    # complete_bonus 權重 = S0 密集獎勵權重相加
+    s0_complete_bonus      = RewTerm(func=mdp.s0_complete_bonus, weight=S0_COMPLETE_BONUS_WEIGHT)
 
     # ── Stage 1：移動到瓶口 + 花朵 +X 朝上 ──────────────────────────────
-    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=50.0)
-    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=50.0)
+    s1_approach_bottle = RewTerm(func=mdp.s1_approach_bottle, weight=_S1_DENSE_WEIGHTS[0])
+    s1_align_flower_up = RewTerm(func=mdp.s1_align_flower_up, weight=_S1_DENSE_WEIGHTS[1])
     # dead_penalty = -λ × cum_end(300+200=500)，λ=1
     s1_dead_penalty = RewTerm(func=mdp.s1_dead_penalty, weight=-500.0)
-    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=100.0)
+    # complete_bonus 權重 = S1 密集獎勵權重相加
+    s1_complete_bonus = RewTerm(func=mdp.s1_complete_bonus, weight=S1_COMPLETE_BONUS_WEIGHT)
 
     # ── Stage 2：插入瓶子 ────────────────────────────────────────────────
-    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=120.0)
+    s2_approach_inside = RewTerm(func=mdp.s2_approach_inside, weight=_S2_DENSE_WEIGHTS[0])
 
     s2_release = RewTerm(
         func=mdp.s2_release,
@@ -329,11 +325,13 @@ class RewardsCfg:
 
     # dead_penalty = -λ × cum_end(200)，λ=1
     s2_dead_penalty   = RewTerm(func=mdp.s2_dead_penalty, weight=-200.0)
-    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=120.0)
+    # complete_bonus 權重 = S2 密集獎勵權重相加
+    s2_complete_bonus = RewTerm(func=mdp.s2_complete_bonus, weight=S2_COMPLETE_BONUS_WEIGHT)
 
     # ── All stages ──────────────────────────────────────────────────────
     # 全任務完成（Stage 2 完成當步）獨立速度獎勵：weight × (所有階段總步數1000 - 目前 step)
-    all_complete_bonus = RewTerm(func=mdp.all_complete_bonus, weight=200.0)
+    # weight = S0 + S1 + S2 所有密集獎勵權重相加
+    all_complete_bonus = RewTerm(func=mdp.all_complete_bonus, weight=ALL_COMPLETE_BONUS_WEIGHT)
     # 動作平滑懲罰
     all_action_rate_l2 = RewTerm(func=mdp.all_action_rate_l2, weight=-0.001)
     all_joint_vel_l2   = RewTerm(func=mdp.all_joint_vel_l2, weight=-0.001)
