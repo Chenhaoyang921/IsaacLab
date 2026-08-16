@@ -1,7 +1,6 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
@@ -17,9 +16,6 @@ from FLOWER_INSERT_DEXHAND.tasks.manager_based.cabinet.cabinet_env_cfg import ( 
 # Allegro 手的全部 16 個指關節
 HAND_JOINTS = ["(index|middle|ring|thumb)_joint_(0|1|2|3)"]
 
-# 當成「兩指夾爪」使用的兩根手指（index 對應原本的 leftfinger、thumb 對應 rightfinger）。
-# 順序必須與 contact_forces 感測器解析出的 body 順序一致，is_catch() 依賴這個對應。
-PINCH_TIPS = ["index_biotac_tip", "thumb_biotac_tip"]
 
 
 @configclass
@@ -39,7 +35,7 @@ class KukaAllegroCabinetEnvCfg(FlowerEnvCfg):
             scale=1.0,
             use_default_offset=True,
         )
-        # 手掌：沿用二元開合語意，張開 / 握拳兩種姿態（抓到花後由 CooldownBinaryGripperAction 鎖定）
+        # 手掌：沿用二元開合語意，張開 / 握拳兩種姿態，RL 全程自由控制
         self.actions.gripper_action = mdp.CooldownBinaryGripperActionCfg(
             asset_name="robot",
             joint_names=HAND_JOINTS,
@@ -93,19 +89,9 @@ class KukaAllegroCabinetEnvCfg(FlowerEnvCfg):
             ],
         )
 
-        # 觸覺回饋：把兩根 biotac 指尖的接觸力加進 policy 的觀察值（+6 維）
-        # 這是 is_catch() 用的同一份訊號，讓策略能直接「感覺到」握力
-        self.observations.policy.fingertip_contact = ObsTerm(
-            func=mdp.fingertip_contact_forces,
-            clip=(-20.0, 20.0),  # 指尖接觸力正常在 20N 以內
-        )
-
         # override rewards：把原本指向 panda_finger 的 asset_cfg 改成 Allegro 指關節
         self.rewards.s2_release.weight = 0.0
         self.rewards.s2_release.params["asset_cfg"].joint_names = HAND_JOINTS
-        self.rewards.s0_grasp_flower.weight = 0.5
-        self.rewards.s0_grasp_flower.params["asset_cfg"].joint_names = HAND_JOINTS
-        self.rewards.s0_lift_when_grasped.params["asset_cfg"].joint_names = HAND_JOINTS
 
 
 @configclass
